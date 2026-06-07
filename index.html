@@ -16,6 +16,9 @@
   <!-- Supabase SDK -->
   <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 
+  <!-- jsPDF (geração de PDF) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
   <style>
     html, body { margin: 0; padding: 0; height: 100%; }
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #F9FAFB; }
@@ -135,6 +138,7 @@ const ICON_PATHS = {
   'alert-triangle': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
   'clock': '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
   'user': '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  'bar-chart-3': '<path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8"/><rect x="12" y="6" width="3" height="12"/><rect x="17" y="13" width="3" height="5"/>',
 };
 
 function LucideIcon({ name, size = 24, color = 'currentColor', strokeWidth = 2, style, ...rest }) {
@@ -208,6 +212,7 @@ const Hash           = (p) => <LucideIcon name="hash" {...p} />;
 const AlertTriangle  = (p) => <LucideIcon name="alert-triangle" {...p} />;
 const Clock          = (p) => <LucideIcon name="clock" {...p} />;
 const User           = (p) => <LucideIcon name="user" {...p} />;
+const BarChart3      = (p) => <LucideIcon name="bar-chart-3" {...p} />;
 
 // ============================================================
 // CONFIGURAÇÃO / CONSTANTES
@@ -279,6 +284,7 @@ function maquinaDoBanco(l) {
     numeroSerie: l.numero_serie || '',
     obra: l.obra || '',
     tipo: l.tipo || 'axial',
+    empresaLocadora: l.empresa_locadora || '',
     possuiHorimetro: l.possui_horimetro !== false,
     horimetroInicial: Number(l.horimetro_inicial) || 0,
     horimetroAtual: Number(l.horimetro_atual) || 0,
@@ -299,6 +305,7 @@ function maquinaParaBanco(m) {
     numero_serie: m.numeroSerie,
     obra: m.obra,
     tipo: m.tipo,
+    empresa_locadora: m.empresaLocadora || null,
     possui_horimetro: m.possuiHorimetro,
     horimetro_inicial: m.horimetroInicial,
     horimetro_atual: m.horimetroAtual,
@@ -369,6 +376,45 @@ function calcularManutencao(m) {
 // ------------------------------------------------------------
 const MOTIVOS_PARADA = ['Mecânico', 'Hidráulico', 'Elétrico', 'Pneu', 'Operacional', 'Outro'];
 
+// Itens padrão do checklist (admin pode editar; semeados na 1ª execução)
+const CHECKLIST_PADRAO = [
+  'Nível de óleo do motor',
+  'Nível de combustível',
+  'Sistema hidráulico (vazamentos)',
+  'Pneus / esteiras',
+  'Freios',
+  'Luzes e sinalização',
+  'Buzina / alarme de ré',
+  'Cinto de segurança',
+  'Espelhos retrovisores',
+  'Limpeza geral / cabine',
+  'Extintor de incêndio',
+  'Vazamentos visíveis no solo',
+];
+
+// Lê/grava a configuração do checklist na tabela configuracoes
+async function lerChecklistConfig() {
+  if (!supabaseClient) return CHECKLIST_PADRAO;
+  const { data, error } = await supabaseClient
+    .from('configuracoes').select('valor').eq('chave', 'checklist_itens').maybeSingle();
+  if (error) { console.error('lerChecklistConfig', error); return CHECKLIST_PADRAO; }
+  if (data && Array.isArray(data.valor) && data.valor.length) return data.valor;
+  return CHECKLIST_PADRAO;
+}
+
+async function salvarChecklistConfig(itens) {
+  if (!supabaseClient) return;
+  await supabaseClient.from('configuracoes')
+    .upsert({ chave: 'checklist_itens', valor: itens, atualizado_em: new Date().toISOString() }, { onConflict: 'chave' });
+}
+
+async function semearChecklistSeVazio() {
+  if (!supabaseClient) return;
+  const { data } = await supabaseClient
+    .from('configuracoes').select('chave').eq('chave', 'checklist_itens').maybeSingle();
+  if (!data) await salvarChecklistConfig(CHECKLIST_PADRAO);
+}
+
 function registroDoBanco(l) {
   return {
     id: l.id,
@@ -385,6 +431,8 @@ function registroDoBanco(l) {
     observacao: l.observacao || '',
     fimParadaDe: l.fim_parada_de || null,
     indisponivelMinutos: l.indisponivel_minutos != null ? Number(l.indisponivel_minutos) : null,
+    checklist: Array.isArray(l.checklist) ? l.checklist : [],
+    fotosExtras: Array.isArray(l.fotos_extras) ? l.fotos_extras : [],
     criadoEm: l.criado_em,
   };
 }
@@ -422,6 +470,245 @@ function dataHoraBR(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   return d.toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
+// Carrega uma imagem (URL) como dataURL para embutir no PDF. Retorna '' se falhar.
+async function imagemParaDataURL(url) {
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    return await new Promise((res) => {
+      const r = new FileReader();
+      r.onloadend = () => res(r.result);
+      r.onerror = () => res('');
+      r.readAsDataURL(blob);
+    });
+  } catch (e) { console.error('imagemParaDataURL', e); return ''; }
+}
+
+// Gera e baixa o PDF de UM registro (lado do operador)
+async function gerarPdfRegistro(reg, maquina) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210; let y = 0;
+
+  // Cabeçalho
+  doc.setFillColor(27, 58, 92); doc.rect(0, 0, W, 26, 'F');
+  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text('Registro de Máquina', 14, 12);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  doc.text('Construtora Axial — Gestão de Frota', 14, 19);
+  y = 34;
+
+  doc.setTextColor(30);
+  const linha = (rotulo, valor) => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.text(rotulo, 14, y);
+    doc.setFont('helvetica', 'normal'); doc.text(String(valor || '—'), 70, y);
+    y += 7;
+  };
+
+  linha('Máquina:', `${maquina.codigo ? maquina.codigo + ' · ' : ''}${maquina.descricao}`);
+  if (maquina.tipo === 'prestador') linha('Empresa locadora:', maquina.empresaLocadora || '—');
+  linha('Obra:', reg.obra || maquina.obra);
+  linha('Operador:', reg.operador);
+  linha('Data/hora:', dataHoraBR(reg.criadoEm || new Date().toISOString()));
+  linha('Status:', reg.status === 'funcional' ? 'FUNCIONAL' : 'NÃO FUNCIONAL');
+  if (reg.status === 'funcional') {
+    linha('Horímetro:', reg.horimetroNA ? 'Não aplicável' : (reg.horimetro != null ? reg.horimetro + ' h' : '—'));
+  } else {
+    linha('Motivo da parada:', reg.motivoParada);
+  }
+  if (reg.indisponivelMinutos != null) linha('Indisponibilidade:', formatarDuracao(reg.indisponivelMinutos));
+  if (reg.observacao) {
+    doc.setFont('helvetica', 'bold'); doc.text('Observação:', 14, y); y += 6;
+    doc.setFont('helvetica', 'normal');
+    const obsLines = doc.splitTextToSize(reg.observacao, W - 28);
+    doc.text(obsLines, 14, y); y += obsLines.length * 5 + 4;
+  }
+
+  // Checklist
+  const itensCheck = (reg.checklist || []).filter(c => c.status);
+  if (itensCheck.length) {
+    y += 2; doc.setDrawColor(220); doc.line(14, y, W - 14, y); y += 7;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.text('Checklist de itens', 14, y); y += 8;
+    doc.setFontSize(10);
+    for (const c of itensCheck) {
+      if (y > 270) { doc.addPage(); y = 20; }
+      const ok = c.status === 'ok';
+      doc.setFont('helvetica', 'bold'); doc.setTextColor(ok ? 22 : 220, ok ? 163 : 38, ok ? 74 : 38);
+      doc.text(ok ? '[ OK ]' : '[ NÃO OK ]', 14, y);
+      doc.setTextColor(30); doc.setFont('helvetica', 'normal');
+      doc.text(c.item, 42, y);
+      y += 6;
+      if (c.obs) { doc.setFont('helvetica', 'italic'); doc.setTextColor(120);
+        const ol = doc.splitTextToSize('↳ ' + c.obs, W - 56); doc.text(ol, 42, y); doc.setTextColor(30); doc.setFont('helvetica', 'normal'); y += ol.length * 5; }
+    }
+  }
+
+  // Foto do painel
+  if (reg.fotoUrl) {
+    const dataUrl = await imagemParaDataURL(reg.fotoUrl);
+    if (dataUrl) {
+      if (y > 200) { doc.addPage(); y = 20; }
+      y += 4; doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text('Foto do painel', 14, y); y += 6;
+      try { doc.addImage(dataUrl, 'JPEG', 14, y, 80, 60); y += 66; } catch(e) {}
+    }
+  }
+
+  // Fotos extras
+  if ((reg.fotosExtras || []).length) {
+    let x = 14;
+    if (y > 210) { doc.addPage(); y = 20; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text('Fotos adicionais', 14, y); y += 6;
+    for (const url of reg.fotosExtras) {
+      const d = await imagemParaDataURL(url);
+      if (!d) continue;
+      if (x + 60 > W - 14) { x = 14; y += 50; }
+      if (y > 250) { doc.addPage(); y = 20; x = 14; }
+      try { doc.addImage(d, 'JPEG', x, y, 58, 44); x += 64; } catch(e) {}
+    }
+    y += 50;
+  }
+
+  const nomeArq = `registro_${(maquina.codigo || maquina.descricao).replace(/\s+/g,'_')}_${new Date().toISOString().slice(0,10)}.pdf`;
+  doc.save(nomeArq);
+}
+
+// Calcula o resumo por máquina dentro de um período [ini, fim]
+// Retorna lista de { maquina, dias:{funcionando,parado,comRegistro}, horas, paradoMin, motivos:{}, disponibilidade }
+function calcularResumoPeriodo(registros, maquinas, ini, fim) {
+  const iniMs = ini ? new Date(ini + 'T00:00:00').getTime() : -Infinity;
+  const fimMs = fim ? new Date(fim + 'T23:59:59').getTime() : Infinity;
+  const noPeriodo = registros.filter(r => {
+    const t = new Date(r.criadoEm).getTime();
+    return t >= iniMs && t <= fimMs;
+  });
+
+  const porMaquina = {};
+  for (const m of maquinas) {
+    porMaquina[m.id] = {
+      maquina: m,
+      diasFunc: new Set(), diasParado: new Set(),
+      horasTrabalhadas: 0, paradoMin: 0,
+      motivos: {}, registros: [],
+    };
+  }
+
+  // ordena cronológico p/ calcular horas trabalhadas (diferença de horímetro)
+  const cron = [...noPeriodo].sort((a,b) => new Date(a.criadoEm) - new Date(b.criadoEm));
+  const ultimoHorimetro = {};
+  for (const r of cron) {
+    const bucket = porMaquina[r.maquinaId];
+    if (!bucket) continue;
+    bucket.registros.push(r);
+    const dia = new Date(r.criadoEm).toISOString().slice(0,10);
+    if (r.status === 'funcional') {
+      bucket.diasFunc.add(dia);
+      if (r.horimetro != null) {
+        if (ultimoHorimetro[r.maquinaId] != null) {
+          const dif = r.horimetro - ultimoHorimetro[r.maquinaId];
+          if (dif > 0 && dif < 100) bucket.horasTrabalhadas += dif; // ignora saltos absurdos
+        }
+        ultimoHorimetro[r.maquinaId] = r.horimetro;
+      }
+    } else {
+      bucket.diasParado.add(dia);
+      bucket.motivos[r.motivoParada] = (bucket.motivos[r.motivoParada] || 0) + 1;
+    }
+    if (r.indisponivelMinutos != null) bucket.paradoMin += r.indisponivelMinutos;
+  }
+
+  return Object.values(porMaquina)
+    .filter(b => b.registros.length > 0)
+    .map(b => {
+      const df = b.diasFunc.size, dp = b.diasParado.size;
+      const totalDias = df + dp;
+      const disponibilidade = totalDias > 0 ? Math.round((df / totalDias) * 100) : null;
+      return {
+        maquina: b.maquina,
+        diasFuncionando: df,
+        diasParado: dp,
+        horasTrabalhadas: Math.round(b.horasTrabalhadas),
+        paradoMin: b.paradoMin,
+        motivos: b.motivos,
+        disponibilidade,
+        registros: b.registros,
+      };
+    });
+}
+
+// Gera e baixa o PDF do admin (todos os checklists do período + resumo)
+function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210; let y = 0;
+
+  doc.setFillColor(27, 58, 92); doc.rect(0, 0, W, 26, 'F');
+  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text('Relatório de Frota', 14, 12);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  const periodoTxt = (ini || fim) ? `Período: ${ini ? ini.split('-').reverse().join('/') : 'início'} a ${fim ? fim.split('-').reverse().join('/') : 'hoje'}` : 'Todos os registros';
+  doc.text('Construtora Axial — ' + periodoTxt, 14, 19);
+  y = 34;
+
+  // Resumo por máquina
+  doc.setTextColor(30); doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
+  doc.text('Resumo por máquina', 14, y); y += 8;
+
+  doc.setFontSize(8.5);
+  const head = ['Máquina', 'Dias func.', 'Dias parado', 'Horas trab.', 'Tempo parado', 'Disponib.'];
+  const colX = [14, 78, 100, 124, 146, 178];
+  doc.setFont('helvetica', 'bold'); doc.setFillColor(240,242,245); doc.rect(12, y-5, W-24, 7, 'F');
+  head.forEach((h,i) => doc.text(h, colX[i], y)); y += 7;
+  doc.setFont('helvetica', 'normal');
+  for (const r of resumo) {
+    if (y > 275) { doc.addPage(); y = 20; }
+    const nome = `${r.maquina.codigo ? r.maquina.codigo+' ' : ''}${r.maquina.descricao}`;
+    doc.text(doc.splitTextToSize(nome, 60)[0], colX[0], y);
+    doc.text(String(r.diasFuncionando), colX[1], y);
+    doc.text(String(r.diasParado), colX[2], y);
+    doc.text(r.maquina.possuiHorimetro ? String(r.horasTrabalhadas)+'h' : '—', colX[3], y);
+    doc.text(formatarDuracao(r.paradoMin || 0), colX[4], y);
+    doc.text(r.disponibilidade != null ? r.disponibilidade+'%' : '—', colX[5], y);
+    y += 6.5;
+  }
+
+  // Motivos de parada (agregado)
+  y += 4; if (y > 260) { doc.addPage(); y = 20; }
+  const motivosTotais = {};
+  resumo.forEach(r => Object.entries(r.motivos).forEach(([m,c]) => motivosTotais[m] = (motivosTotais[m]||0)+c));
+  if (Object.keys(motivosTotais).length) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.text('Motivos de parada', 14, y); y += 7;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    Object.entries(motivosTotais).sort((a,b)=>b[1]-a[1]).forEach(([m,c]) => {
+      if (y > 280) { doc.addPage(); y = 20; }
+      doc.text(`• ${m}: ${c} ocorrência(s)`, 16, y); y += 6;
+    });
+  }
+
+  // Detalhe dos registros
+  doc.addPage(); y = 20;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.text('Registros detalhados', 14, y); y += 8;
+  doc.setFontSize(9.5);
+  const cron = [...registrosPeriodo].sort((a,b) => new Date(b.criadoEm) - new Date(a.criadoEm));
+  for (const r of cron) {
+    if (y > 270) { doc.addPage(); y = 20; }
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(30);
+    doc.text(`${dataHoraBR(r.criadoEm)} — ${r.maquinaCodigo ? r.maquinaCodigo+' ' : ''}${r.maquinaDescricao}`, 14, y); y += 5;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+    const st = r.status === 'funcional'
+      ? `Funcional · ${r.horimetroNA ? 'horímetro N/A' : (r.horimetro!=null ? r.horimetro+'h' : 's/ horímetro')}`
+      : `NÃO FUNCIONAL · ${r.motivoParada}`;
+    doc.setTextColor(r.status==='funcional'?22:200, r.status==='funcional'?120:40, 40);
+    doc.text(st, 16, y); doc.setTextColor(80);
+    doc.text(`Operador: ${r.operador || '—'}`, 120, y); y += 5;
+    if (r.indisponivelMinutos != null) { doc.setTextColor(140,80,10); doc.text(`Indisponibilidade: ${formatarDuracao(r.indisponivelMinutos)}`, 16, y); y += 5; }
+    const nok = (r.checklist||[]).filter(c => c.status === 'nok');
+    if (nok.length) { doc.setTextColor(200,40,40); doc.text(`Itens NÃO OK: ${nok.map(c=>c.item).join(', ')}`, 16, y, { maxWidth: W-30 }); y += 5; }
+    doc.setTextColor(30); doc.setFontSize(9.5); y += 2;
+  }
+
+  doc.save(`relatorio_frota_${new Date().toISOString().slice(0,10)}.pdf`);
 }
 
 // ============================================================
@@ -483,7 +770,7 @@ function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
   const ed = !!maquina;
   const [f, setF] = useState(maquina || {
     codigo:'', descricao:'', modelo:'', fabricante:'', numeroSerie:'',
-    obra: (obras[0] && obras[0].nome) || '', tipo:'axial',
+    obra: (obras[0] && obras[0].nome) || '', tipo:'axial', empresaLocadora:'',
     possuiHorimetro:true, horimetroInicial:0, horimetroAtual:0,
     intervaloManutencao:500, horimetroUltimaManutencao:0,
     statusAtual:'funcional', ativa:true,
@@ -534,6 +821,16 @@ function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
             </select>
           </div>
         </div>
+
+        {f.tipo === 'prestador' && (
+          <div>
+            <label style={S.rotulo}>Empresa locadora</label>
+            <div style={{position:'relative'}}>
+              <Building size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+              <input value={f.empresaLocadora || ''} placeholder="Nome da empresa proprietária" style={{...S.campo, paddingLeft:42}} onChange={e => set('empresaLocadora', e.target.value)} />
+            </div>
+          </div>
+        )}
 
         <div>
           <label style={S.rotulo}>Descrição *</label>
@@ -614,6 +911,7 @@ function CardMaquina({ m, onEditar, onToggleAtiva }) {
               <div style={{fontSize:13, color:COR.cinza, marginTop:4}}>
                 {[m.fabricante, m.modelo].filter(Boolean).join(' · ') || '—'}
                 {m.numeroSerie && <span style={{display:'block', marginTop:2, fontFamily:'monospace', fontSize:12}}>NS: {m.numeroSerie}</span>}
+                {m.tipo === 'prestador' && m.empresaLocadora && <span style={{display:'block', marginTop:2, fontSize:12, color:'#7C3AED', fontWeight:600}}>Locada: {m.empresaLocadora}</span>}
               </div>
             </div>
             <div style={{display:'flex', flexDirection:'column', gap:6, alignItems:'flex-end'}}>
@@ -842,9 +1140,50 @@ function TelaInicial({ onOperador, onAdmin }) {
 }
 
 // --- Operador: passo 1, escolher a máquina ---
-function OperadorSelecionaMaquina({ maquinas, ultimoStatus, onEscolher, onVoltar }) {
-  const [busca, setBusca] = useState('');
+// --- Operador: passo 1, escolher a OBRA ---
+function OperadorSelecionaObra({ obras, maquinas, onEscolher, onVoltar }) {
   const ativas = maquinas.filter(m => m.ativa);
+  // conta máquinas por obra (apenas obras com máquina ativa entram)
+  const contagem = {};
+  for (const m of ativas) {
+    const nome = m.obra || 'Sem obra';
+    contagem[nome] = (contagem[nome] || 0) + 1;
+  }
+  const nomesObras = Object.keys(contagem).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+  return (
+    <div style={{maxWidth:560, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Selecione a obra</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>{nomesObras.length} obra(s) com máquinas</p>
+        </div>
+      </div>
+
+      <div style={{display:'flex', flexDirection:'column', gap:10}}>
+        {nomesObras.map(nome => (
+          <button key={nome} onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${COR.borda}`, borderRadius:14, padding:'16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+            <div style={{width:42, height:42, borderRadius:11, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+              <Building size={22} color={COR.azul}/>
+            </div>
+            <div style={{flex:1, minWidth:0}}>
+              <div style={{fontSize:15.5, fontWeight:700, color:COR.texto}}>{nome}</div>
+              <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>{contagem[nome]} máquina(s)</div>
+            </div>
+            <ChevronRight size={20} color={COR.cinza}/>
+          </button>
+        ))}
+        {nomesObras.length === 0 && <p style={{textAlign:'center', color:COR.cinza, padding:'30px 0'}}>Nenhuma máquina ativa cadastrada.</p>}
+      </div>
+    </div>
+  );
+}
+
+// --- Operador: passo 2, escolher a MÁQUINA (da obra selecionada) ---
+function OperadorSelecionaMaquina({ maquinas, obra, ultimoStatus, onEscolher, onVoltar }) {
+  const [busca, setBusca] = useState('');
+  const ativas = maquinas.filter(m => m.ativa && (m.obra || 'Sem obra') === obra);
   const filtradas = ativas.filter(m => {
     if (!busca.trim()) return true;
     const q = busca.toLowerCase();
@@ -857,7 +1196,7 @@ function OperadorSelecionaMaquina({ maquinas, ultimoStatus, onEscolher, onVoltar
         <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
         <div>
           <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Selecione a máquina</h2>
-          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>{ativas.length} disponíveis</p>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5, display:'flex', alignItems:'center', gap:5}}><Building size={13}/> {obra} · {ativas.length} máquina(s)</p>
         </div>
       </div>
 
@@ -894,7 +1233,7 @@ function OperadorSelecionaMaquina({ maquinas, ultimoStatus, onEscolher, onVoltar
 }
 
 // --- Operador: passo 2, registrar status ---
-function OperadorRegistra({ maquina, paradaAberta, onConfirmar, onVoltar, salvando }) {
+function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, onVoltar, salvando }) {
   // paradaAberta = registro de não-funcional em aberto (ou null)
   const [operador, setOperador] = useState('');
   const [status, setStatus] = useState(null);     // 'funcional' | 'nao_funcional'
@@ -905,6 +1244,10 @@ function OperadorRegistra({ maquina, paradaAberta, onConfirmar, onVoltar, salvan
   const [foto, setFoto] = useState(null);
   const [fotoPreview, setFotoPreview] = useState('');
   const [erro, setErro] = useState('');
+  // checklist: { [item]: { status:'ok'|'nok'|null, obs:'' } }
+  const [check, setCheck] = useState({});
+  // fotos extras: [{ file, preview }]
+  const [extras, setExtras] = useState([]);
 
   const temHorimetro = maquina.possuiHorimetro;
   const exigeFoto = status === 'funcional' && temHorimetro && !na;
@@ -914,6 +1257,20 @@ function OperadorRegistra({ maquina, paradaAberta, onConfirmar, onVoltar, salvan
     if (!f) return;
     setFoto(f);
     setFotoPreview(URL.createObjectURL(f));
+  }
+
+  function addExtras(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setExtras(prev => [...prev, ...files.map(f => ({ file: f, preview: URL.createObjectURL(f) }))]);
+    e.target.value = '';
+  }
+  function removerExtra(idx) {
+    setExtras(prev => prev.filter((_, i) => i !== idx));
+  }
+
+  function setItem(item, campo, valor) {
+    setCheck(prev => ({ ...prev, [item]: { ...(prev[item] || { status:null, obs:'' }), [campo]: valor } }));
   }
 
   function validarEConfirmar() {
@@ -928,6 +1285,12 @@ function OperadorRegistra({ maquina, paradaAberta, onConfirmar, onVoltar, salvan
     } else { // nao_funcional
       if (!motivo) { setErro('Selecione o motivo da parada.'); return; }
     }
+    // monta o checklist final (só itens respondidos)
+    const checklist = (checklistItens || []).map(item => ({
+      item,
+      status: (check[item] && check[item].status) || null,
+      obs: (check[item] && check[item].obs) || '',
+    }));
     onConfirmar({
       operador: operador.trim(),
       status,
@@ -936,6 +1299,8 @@ function OperadorRegistra({ maquina, paradaAberta, onConfirmar, onVoltar, salvan
       motivo: status === 'nao_funcional' ? motivo : '',
       observacao: obs.trim(),
       foto,
+      checklist,
+      fotosExtras: extras.map(x => x.file),
     });
   }
 
@@ -1040,10 +1405,57 @@ function OperadorRegistra({ maquina, paradaAberta, onConfirmar, onVoltar, salvan
           </div>
         )}
 
+        {/* Checklist de itens (sempre que escolheu status) */}
+        {status && (checklistItens || []).length > 0 && (
+          <div>
+            <div style={{height:1, background:COR.borda, margin:'2px 0 14px'}} />
+            <label style={S.rotulo}>Checklist de itens</label>
+            <div style={{display:'flex', flexDirection:'column', gap:8, marginTop:4}}>
+              {checklistItens.map((item, i) => {
+                const r = check[item] || { status:null, obs:'' };
+                return (
+                  <div key={i} style={{border:`1px solid ${COR.borda}`, borderRadius:11, padding:'10px 12px'}}>
+                    <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:10}}>
+                      <span style={{fontSize:14, fontWeight:600, color:COR.texto, flex:1}}>{item}</span>
+                      <div style={{display:'flex', gap:6, flexShrink:0}}>
+                        <button onClick={() => setItem(item, 'status', r.status==='ok'?null:'ok')} style={{padding:'6px 12px', borderRadius:8, border:`1.5px solid ${r.status==='ok'?COR.verde:COR.borda}`, background:r.status==='ok'?COR.verdeBg:'#fff', color:r.status==='ok'?COR.verde:COR.cinza, fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>OK</button>
+                        <button onClick={() => setItem(item, 'status', r.status==='nok'?null:'nok')} style={{padding:'6px 12px', borderRadius:8, border:`1.5px solid ${r.status==='nok'?COR.vermelho:COR.borda}`, background:r.status==='nok'?COR.vermelhoBg:'#fff', color:r.status==='nok'?COR.vermelho:COR.cinza, fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>Não OK</button>
+                      </div>
+                    </div>
+                    {r.status==='nok' && (
+                      <input value={r.obs} placeholder="O que há de errado? (opcional)" style={{...S.campo, padding:'8px 11px', fontSize:13.5, marginTop:8}} onChange={e => setItem(item, 'obs', e.target.value)} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Fotos extras (sempre que escolheu status) */}
+        {status && (
+          <div>
+            <label style={S.rotulo}>Fotos adicionais (opcional)</label>
+            <div style={{display:'flex', flexWrap:'wrap', gap:10}}>
+              {extras.map((x, i) => (
+                <div key={i} style={{position:'relative', width:88, height:88, borderRadius:10, overflow:'hidden', border:`1px solid ${COR.borda}`}}>
+                  <img src={x.preview} alt={'extra'+i} style={{width:'100%', height:'100%', objectFit:'cover'}}/>
+                  <button onClick={() => removerExtra(i)} style={{position:'absolute', top:3, right:3, background:'rgba(0,0,0,.6)', color:'#fff', border:'none', borderRadius:6, width:22, height:22, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center'}}><X size={13}/></button>
+                </div>
+              ))}
+              <label style={{width:88, height:88, borderRadius:10, border:`2px dashed ${COR.borda}`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:4, cursor:'pointer', color:COR.cinza}}>
+                <Camera size={22} color={COR.azulCl}/>
+                <span style={{fontSize:11, fontWeight:600}}>Adicionar</span>
+                <input type="file" accept="image/*" multiple onChange={addExtras} style={{display:'none'}}/>
+              </label>
+            </div>
+          </div>
+        )}
+
         {/* Observação (opcional) */}
         {status && (
           <div>
-            <label style={S.rotulo}>Observação (opcional)</label>
+            <label style={S.rotulo}>Observação geral (opcional)</label>
             <textarea value={obs} rows={2} placeholder="Algo a registrar…" style={{...S.campo, resize:'vertical'}} onChange={e => setObs(e.target.value)}/>
           </div>
         )}
@@ -1060,6 +1472,14 @@ function OperadorRegistra({ maquina, paradaAberta, onConfirmar, onVoltar, salvan
 
 // --- Operador: tela de sucesso ---
 function OperadorSucesso({ info, onNovo, onSair }) {
+  const [gerando, setGerando] = useState(false);
+  async function baixarPdf() {
+    if (!info.registro || !info.maquinaObj) return;
+    setGerando(true);
+    try { await gerarPdfRegistro(info.registro, info.maquinaObj); }
+    catch (e) { console.error(e); alert('Não foi possível gerar o PDF.'); }
+    finally { setGerando(false); }
+  }
   return (
     <div style={{maxWidth:440, margin:'40px auto 0', textAlign:'center', padding:'0 16px'}}>
       <div style={{width:80, height:80, borderRadius:'50%', background:COR.verdeBg, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 18px'}}>
@@ -1073,8 +1493,147 @@ function OperadorSucesso({ info, onNovo, onSair }) {
         </div>
       )}
       <div style={{display:'flex', flexDirection:'column', gap:10, marginTop:22}}>
-        <button onClick={onNovo} style={S.botaoPrim}><Plus size={18}/> Registrar outra máquina</button>
-        <button onClick={onSair} style={S.botaoSec}>Sair</button>
+        <button onClick={baixarPdf} disabled={gerando} style={{...S.botaoPrim, opacity:gerando?.7:1}}><Download size={18}/> {gerando ? 'Gerando PDF…' : 'Baixar PDF do registro'}</button>
+        <button onClick={onNovo} style={S.botaoSec}><Plus size={18}/> Registrar outra máquina</button>
+        <button onClick={onSair} style={{...S.botaoSec, border:'none'}}>Sair</button>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// ADMIN: RELATÓRIOS (período + resumo + PDF)
+// ============================================================
+function TelaRelatorios({ registros, maquinas, onVoltar }) {
+  const hoje = new Date().toISOString().slice(0,10);
+  const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+  const [ini, setIni] = useState(mesPassado);
+  const [fim, setFim] = useState(hoje);
+
+  const resumo = calcularResumoPeriodo(registros, maquinas, ini, fim);
+  const registrosPeriodo = registros.filter(r => {
+    const t = new Date(r.criadoEm).getTime();
+    const a = ini ? new Date(ini+'T00:00:00').getTime() : -Infinity;
+    const b = fim ? new Date(fim+'T23:59:59').getTime() : Infinity;
+    return t >= a && t <= b;
+  });
+
+  return (
+    <div style={{maxWidth:820, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Relatórios</h2>
+      </div>
+
+      <div style={{...S.card, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
+        <div>
+          <label style={S.rotulo}>De</label>
+          <input type="date" value={ini} style={{...S.campo, width:'auto'}} onChange={e => setIni(e.target.value)}/>
+        </div>
+        <div>
+          <label style={S.rotulo}>Até</label>
+          <input type="date" value={fim} style={{...S.campo, width:'auto'}} onChange={e => setFim(e.target.value)}/>
+        </div>
+        <button onClick={() => gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim)} disabled={!resumo.length} style={{...S.botaoPrim, opacity: resumo.length?1:.5, marginLeft:'auto'}}>
+          <Download size={18}/> Baixar PDF do período
+        </button>
+      </div>
+
+      {resumo.length === 0 ? (
+        <div style={{textAlign:'center', padding:'48px 20px', color:COR.cinza}}>
+          <FileText size={40} color={COR.borda}/>
+          <p style={{marginTop:12, fontWeight:600}}>Nenhum registro neste período.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:12}}>
+          {resumo.map(r => (
+            <div key={r.maquina.id} style={{...S.card}}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10, marginBottom:12}}>
+                <div>
+                  <div style={{fontSize:16, fontWeight:800, color:COR.texto}}>{r.maquina.codigo ? r.maquina.codigo+' · ' : ''}{r.maquina.descricao}</div>
+                  <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>{r.maquina.obra || 'Sem obra'}</div>
+                </div>
+                {r.disponibilidade != null && (
+                  <Badge cor={r.disponibilidade>=80?COR.verde:(r.disponibilidade>=50?COR.amarelo:COR.vermelho)} bg={r.disponibilidade>=80?COR.verdeBg:(r.disponibilidade>=50?COR.amareloBg:COR.vermelhoBg)}>
+                    <BarChart3 size={12}/> {r.disponibilidade}% disponível
+                  </Badge>
+                )}
+              </div>
+              <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(110px, 1fr))', gap:10}}>
+                <Metrica rotulo="Dias funcionando" valor={r.diasFuncionando} cor={COR.verde}/>
+                <Metrica rotulo="Dias parado" valor={r.diasParado} cor={COR.vermelho}/>
+                {r.maquina.possuiHorimetro && <Metrica rotulo="Horas trabalhadas" valor={r.horasTrabalhadas + 'h'} cor={COR.azul}/>}
+                <Metrica rotulo="Tempo parado" valor={formatarDuracao(r.paradoMin || 0)} cor={COR.amarelo}/>
+              </div>
+              {Object.keys(r.motivos).length > 0 && (
+                <div style={{marginTop:12, fontSize:13, color:COR.cinza}}>
+                  <b style={{color:COR.texto}}>Motivos:</b> {Object.entries(r.motivos).map(([m,c]) => `${m} (${c})`).join(', ')}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <p style={{fontSize:12, color:COR.cinza, marginTop:16, lineHeight:1.5}}>
+        Os números refletem os dias em que houve registro do operador. Dias sem nenhum registro não entram na conta de funcionando nem parado.
+      </p>
+    </div>
+  );
+}
+
+function Metrica({ rotulo, valor, cor }) {
+  return (
+    <div style={{background:'#F8FAFC', borderRadius:10, padding:'10px 12px'}}>
+      <div style={{fontSize:20, fontWeight:800, color:cor}}>{valor}</div>
+      <div style={{fontSize:11.5, color:COR.cinza, fontWeight:600, marginTop:2}}>{rotulo}</div>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN: CONFIGURAÇÃO DO CHECKLIST
+// ============================================================
+function ConfigChecklist({ itens, onSalvar, onFechar }) {
+  const [lista, setLista] = useState(itens && itens.length ? [...itens] : []);
+  const [novo, setNovo] = useState('');
+
+  function add() { if (novo.trim()) { setLista([...lista, novo.trim()]); setNovo(''); } }
+  function remover(i) { setLista(lista.filter((_, idx) => idx !== i)); }
+  function mover(i, dir) {
+    const j = i + dir; if (j < 0 || j >= lista.length) return;
+    const nova = [...lista]; [nova[i], nova[j]] = [nova[j], nova[i]]; setLista(nova);
+  }
+
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.45)', zIndex:500, display:'flex', alignItems:'flex-end', justifyContent:'center'}} onClick={onFechar}>
+      <div onClick={e => e.stopPropagation()} style={{background:'#fff', width:'100%', maxWidth:560, borderRadius:'18px 18px 0 0', padding:20, maxHeight:'85vh', overflow:'auto'}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16}}>
+          <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul, display:'flex', alignItems:'center', gap:8}}><List size={20}/> Itens do checklist</h3>
+          <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:8}}><X size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', gap:8, marginBottom:16}}>
+          <input value={novo} placeholder="Novo item de checklist" style={S.campo} onChange={e => setNovo(e.target.value)} onKeyDown={e => e.key==='Enter' && add()}/>
+          <button onClick={add} style={{...S.botaoPrim, padding:'11px 16px'}}><Plus size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', flexDirection:'column', gap:8}}>
+          {lista.length === 0 && <p style={{color:COR.cinza, textAlign:'center', padding:'20px 0'}}>Nenhum item.</p>}
+          {lista.map((it, i) => (
+            <div key={i} style={{display:'flex', alignItems:'center', gap:8, padding:'10px 12px', border:`1px solid ${COR.borda}`, borderRadius:10}}>
+              <span style={{flex:1, fontWeight:600, color:COR.texto, fontSize:14}}>{it}</span>
+              <button onClick={() => mover(i,-1)} disabled={i===0} style={{...S.botaoSec, padding:'5px 9px', opacity:i===0?.3:1}}>↑</button>
+              <button onClick={() => mover(i,1)} disabled={i===lista.length-1} style={{...S.botaoSec, padding:'5px 9px', opacity:i===lista.length-1?.3:1}}>↓</button>
+              <button onClick={() => remover(i)} style={{...S.botaoSec, padding:'5px 9px', color:COR.vermelho, borderColor:'#FECACA'}}><Trash2 size={15}/></button>
+            </div>
+          ))}
+        </div>
+
+        <button onClick={() => onSalvar(lista)} style={{...S.botaoPrim, width:'100%', marginTop:16}}><Save size={18}/> Salvar checklist</button>
+        <p style={{fontSize:12, color:COR.cinza, marginTop:12, lineHeight:1.5}}>
+          Estes itens aparecem para o operador em toda máquina. Vale para todos os dispositivos.
+        </p>
       </div>
     </div>
   );
@@ -1089,14 +1648,17 @@ function App() {
   const [maquinas, setMaquinas] = useState([]);
   const [obras, setObras] = useState([]);
   const [registros, setRegistros] = useState([]);
+  const [checklistItens, setChecklistItens] = useState(CHECKLIST_PADRAO);
   const [carregando, setCarregando] = useState(true);
   const [tela, setTela] = useState('lista');      // admin: 'lista' | 'form'
   const [editando, setEditando] = useState(null);  // máquina em edição
   const [showObras, setShowObras] = useState(false);
+  const [showChecklist, setShowChecklist] = useState(false);
   const [toast, setToast] = useState('');
 
   // Fluxo operador: 'maquina' (escolhe) | 'registra' | 'sucesso'
-  const [opPasso, setOpPasso] = useState('maquina');
+  const [opPasso, setOpPasso] = useState('obra');
+  const [opObra, setOpObra] = useState(null);
   const [opMaquina, setOpMaquina] = useState(null);
   const [opSalvando, setOpSalvando] = useState(false);
   const [opResultado, setOpResultado] = useState(null);
@@ -1104,8 +1666,8 @@ function App() {
   function aviso(msg) { setToast(msg); setTimeout(() => setToast(''), 2600); }
 
   async function recarregar() {
-    const [ms, os, rs] = await Promise.all([listarMaquinas(), listarObras(), listarRegistros()]);
-    setMaquinas(ms); setObras(os); setRegistros(rs); setCarregando(false);
+    const [ms, os, rs, ci] = await Promise.all([listarMaquinas(), listarObras(), listarRegistros(), lerChecklistConfig()]);
+    setMaquinas(ms); setObras(os); setRegistros(rs); setChecklistItens(ci); setCarregando(false);
   }
 
   // Carrega dados quando entra em operador ou admin
@@ -1116,12 +1678,14 @@ function App() {
     (async () => {
       setCarregando(true);
       await semearSeVazio();
+      await semearChecklistSeVazio();
       await recarregar();
       if (supabaseClient) {
         canal = supabaseClient.channel('frota')
           .on('postgres_changes', { event:'*', schema:'public', table:'maquinas' }, recarregar)
           .on('postgres_changes', { event:'*', schema:'public', table:'obras' }, recarregar)
           .on('postgres_changes', { event:'*', schema:'public', table:'registros' }, recarregar)
+          .on('postgres_changes', { event:'*', schema:'public', table:'configuracoes' }, recarregar)
           .subscribe();
       }
     })();
@@ -1164,10 +1728,16 @@ function App() {
     if (!supabaseClient || !opMaquina) return;
     setOpSalvando(true);
     try {
-      // 1) upload da foto, se houver
+      // 1) upload da foto do painel, se houver
       let fotoUrl = '';
       if (dados.foto) {
         fotoUrl = await enviarFoto(dados.foto);
+      }
+      // 1b) upload das fotos extras
+      const fotosExtrasUrls = [];
+      for (const f of (dados.fotosExtras || [])) {
+        try { const u = await enviarFoto(f); if (u) fotosExtrasUrls.push(u); }
+        catch (e) { console.error('foto extra', e); }
       }
 
       // 2) se está voltando a funcional e havia parada em aberto, calcula indisponibilidade
@@ -1196,6 +1766,8 @@ function App() {
         observacao: dados.observacao,
         fim_parada_de: fimParadaDe,
         indisponivel_minutos: indisponivelMin,
+        checklist: dados.checklist || [],
+        fotos_extras: fotosExtrasUrls,
       };
       const { error } = await supabaseClient.from('registros').insert(linha);
       if (error) throw error;
@@ -1207,9 +1779,16 @@ function App() {
       }
       await supabaseClient.from('maquinas').update(upd).eq('id', opMaquina.id);
 
+      // registro completo (p/ exibir e gerar PDF)
+      const regCompleto = {
+        ...registroDoBanco({ ...linha, criado_em: new Date().toISOString() }),
+        fotoUrl, fotosExtras: fotosExtrasUrls,
+      };
       setOpResultado({
         maquina: `${opMaquina.codigo ? opMaquina.codigo + ' · ' : ''}${opMaquina.descricao}`,
         indisponivelMinutos: indisponivelMin,
+        registro: regCompleto,
+        maquinaObj: opMaquina,
       });
       setOpPasso('sucesso');
       recarregar();
@@ -1222,10 +1801,19 @@ function App() {
   }
 
   function reiniciarOperador() {
-    setOpMaquina(null); setOpResultado(null); setOpPasso('maquina');
+    setOpMaquina(null); setOpObra(null); setOpResultado(null); setOpPasso('obra');
   }
   function sairParaInicio() {
     reiniciarOperador(); setModo('inicial');
+  }
+
+  // --- Configuração do checklist (admin) ---
+  async function salvarChecklist(itens) {
+    await salvarChecklistConfig(itens);
+    setChecklistItens(itens);
+    setShowChecklist(false);
+    aviso('Checklist atualizado.');
+    recarregar();
   }
 
   // --- CRUD obras ---
@@ -1272,16 +1860,23 @@ function App() {
         <main style={{padding:'24px 16px 60px'}}>
           {carregando ? (
             <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando máquinas…</p>
+          ) : opPasso === 'obra' ? (
+            <OperadorSelecionaObra
+              obras={obras} maquinas={maquinas}
+              onEscolher={(nome) => { setOpObra(nome); setOpPasso('maquina'); }}
+              onVoltar={sairParaInicio}
+            />
           ) : opPasso === 'maquina' ? (
             <OperadorSelecionaMaquina
-              maquinas={maquinas} ultimoStatus={ultimoStatus}
+              maquinas={maquinas} obra={opObra} ultimoStatus={ultimoStatus}
               onEscolher={(m) => { setOpMaquina(m); setOpPasso('registra'); }}
-              onVoltar={sairParaInicio}
+              onVoltar={() => { setOpObra(null); setOpPasso('obra'); }}
             />
           ) : opPasso === 'registra' ? (
             <OperadorRegistra
               maquina={opMaquina}
               paradaAberta={ultimoRegistroNaoFunc[opMaquina.id] || null}
+              checklistItens={checklistItens}
               salvando={opSalvando}
               onConfirmar={salvarRegistro}
               onVoltar={() => { setOpMaquina(null); setOpPasso('maquina'); }}
@@ -1310,9 +1905,17 @@ function App() {
             <div style={{fontSize:11.5, opacity:.7}}>Construtora Axial</div>
           </div>
         </div>
-        <button onClick={() => { setLogado(false); setModo('inicial'); setTela('lista'); }} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
-          <LogOut size={16}/> Sair
-        </button>
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          <button onClick={() => setTela(tela === 'relatorios' ? 'lista' : 'relatorios')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <BarChart3 size={16}/> Relatórios
+          </button>
+          <button onClick={() => setShowChecklist(true)} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <List size={16}/> Checklist
+          </button>
+          <button onClick={() => { setLogado(false); setModo('inicial'); setTela('lista'); }} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <LogOut size={16}/> Sair
+          </button>
+        </div>
       </header>
 
       <main style={{padding:'24px 16px 60px'}}>
@@ -1332,10 +1935,20 @@ function App() {
             onCancelar={() => { setTela('lista'); setEditando(null); }}
           />
         )}
+        {tela === 'relatorios' && (
+          <TelaRelatorios
+            registros={registros} maquinas={maquinas}
+            onVoltar={() => setTela('lista')}
+          />
+        )}
       </main>
 
       {showObras && (
         <GestaoObras obras={obras} onCriar={criarObra} onRenomear={renomearObra} onExcluir={excluirObra} onFechar={() => setShowObras(false)} />
+      )}
+
+      {showChecklist && (
+        <ConfigChecklist itens={checklistItens} onSalvar={salvarChecklist} onFechar={() => setShowChecklist(false)} />
       )}
 
       {toast && (
