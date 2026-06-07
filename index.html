@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1B3A5C" />
+  <title>Checklist Axial</title>
+
+  <!-- React 18 (UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone para compilar JSX no browser -->
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+
+  <!-- Supabase SDK -->
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #F9FAFB; }
+    #root { min-height: 100vh; }
+    #boot-loader {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; background: #F9FAFB; z-index: 9999;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #1B3A5C; padding: 20px; text-align: center;
+    }
+    #boot-loader .spinner {
+      width: 44px; height: 44px; border: 4px solid #E5E7EB;
+      border-top-color: #1B3A5C; border-radius: 50%;
+      animation: bootspin 0.9s linear infinite;
+    }
+    @keyframes bootspin { to { transform: rotate(360deg); } }
+    .boot-hide { display: none !important; }
+    #error-overlay {
+      display: none;
+      position: fixed; inset: 0; background: #FEF2F2; z-index: 10000;
+      padding: 20px; overflow: auto; font-family: monospace; font-size: 13px;
+      color: #991B1B; white-space: pre-wrap; word-break: break-word;
+    }
+    #error-overlay h2 { color: #7F1D1D; margin-top: 0; font-family: 'Inter', sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="boot-loader">
+    <div class="spinner"></div>
+    <div style="font-weight:600;font-size:14px;">Carregando Checklist Axial…</div>
+    <div style="font-size:11px;opacity:0.6;max-width:300px;">A primeira carga pode levar alguns segundos enquanto o JSX é compilado.</div>
+  </div>
+  <div id="error-overlay">
+    <h2>⚠️ Erro ao carregar o app</h2>
+    <div id="error-message"></div>
+  </div>
+  <div id="root"></div>
+
+  <script>
+    // Captura erros globais e exibe na tela (útil pra debug em produção)
+    window.addEventListener('error', function(e) {
+      const overlay = document.getElementById('error-overlay');
+      const msg = document.getElementById('error-message');
+      if (overlay && msg) {
+        overlay.style.display = 'block';
+        const errInfo = (e.error && e.error.stack) || e.message || String(e);
+        msg.textContent = errInfo + '\n\nArquivo: ' + (e.filename || '?') + ':' + (e.lineno || '?');
+      }
+      document.getElementById('boot-loader')?.classList.add('boot-hide');
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      const overlay = document.getElementById('error-overlay');
+      const msg = document.getElementById('error-message');
+      if (overlay && msg) {
+        overlay.style.display = 'block';
+        msg.textContent = 'Promise rejeitada: ' + (e.reason && e.reason.stack || e.reason || 'desconhecido');
+      }
+    });
+  </script>
+
+  <script type="text/babel" data-presets="react">
+// Esconde o loader assim que o Babel começou a executar este script
+document.getElementById('boot-loader')?.classList.add('boot-hide');
+
+// React vem do CDN (UMD) - disponível como `React` global
+const { useState, useRef, useEffect } = React;
+
+// ============================================================
+// ÍCONES INLINE - paths SVG do Lucide embutidos no arquivo
+// para garantir funcionamento sem depender de pacote externo
+// ============================================================
+const ICON_PATHS = {
+  'alert-circle': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+  'calendar': '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+  'camera': '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
+  'check': '<polyline points="20 6 9 17 4 12"/>',
+  'check-circle-2': '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+  'chevron-left': '<polyline points="15 18 9 12 15 6"/>',
+  'chevron-right': '<polyline points="9 18 15 12 9 6"/>',
+  'clipboard-check': '<rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/>',
+  'download': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
+  'filter': '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+  'fuel': '<line x1="3" y1="22" x2="15" y2="22"/><line x1="4" y1="9" x2="14" y2="9"/><path d="M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18"/><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2a2 2 0 0 0 2-2V9.83a2 2 0 0 0-.59-1.42L18 5"/>',
+  'history': '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+  'home': '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+  'map-pin': '<path d="M20 10c0 7-8 12-8 12s-8-5-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
+  'minus': '<line x1="5" y1="12" x2="19" y2="12"/>',
+  'pen-line': '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  'plus': '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  'qr-code': '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3"/><path d="M14 19h3"/><path d="M19 14v7"/>',
+  'rotate-ccw': '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  'search': '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  'send': '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  'trash-2': '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
+  'truck': '<path d="M10 17h4V5H2v12h3"/><path d="M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L19 9h-5v8h1"/><circle cx="7.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+  'users': '<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  'wrench': '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  'x': '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  'shield': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  'eye': '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  'lock': '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  'log-out': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  'edit': '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
+  'save': '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  'plus-circle': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>',
+  'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
+  'arrow-left': '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+  'gauge': '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  'building': '<rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/><path d="M16 14h.01"/><path d="M8 10h.01"/><path d="M8 14h.01"/>',
+  'factory': '<path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M17 18h1"/><path d="M12 18h1"/><path d="M7 18h1"/>',
+  'power': '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
+  'circle-slash': '<circle cx="12" cy="12" r="10"/><line x1="9" y1="15" x2="15" y2="9"/>',
+  'list': '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+  'hash': '<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>',
+};
+
+function LucideIcon({ name, size = 24, color = 'currentColor', strokeWidth = 2, style, ...rest }) {
+  const paths = ICON_PATHS[name];
+  if (!paths) {
+    console.warn('Ícone não encontrado:', name);
+    return null;
+  }
+  return React.createElement('svg', {
+    xmlns: 'http://www.w3.org/2000/svg',
+    width: size,
+    height: size,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: color,
+    strokeWidth: strokeWidth,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    style,
+    dangerouslySetInnerHTML: { __html: paths },
+    ...rest,
+  });
+}
+
+// Wrappers com mesmo nome do lucide-react, pra não precisar refatorar
+// nenhuma chamada existente no código do app abaixo
+const AlertCircle    = (p) => <LucideIcon name="alert-circle" {...p} />;
+const Calendar       = (p) => <LucideIcon name="calendar" {...p} />;
+const Camera         = (p) => <LucideIcon name="camera" {...p} />;
+const Check          = (p) => <LucideIcon name="check" {...p} />;
+const CheckCircle2   = (p) => <LucideIcon name="check-circle-2" {...p} />;
+const ChevronLeft    = (p) => <LucideIcon name="chevron-left" {...p} />;
+const ChevronRight   = (p) => <LucideIcon name="chevron-right" {...p} />;
+const ClipboardCheck = (p) => <LucideIcon name="clipboard-check" {...p} />;
+const Download       = (p) => <LucideIcon name="download" {...p} />;
+const FileText       = (p) => <LucideIcon name="file-text" {...p} />;
+const Filter         = (p) => <LucideIcon name="filter" {...p} />;
+const Fuel           = (p) => <LucideIcon name="fuel" {...p} />;
+const History        = (p) => <LucideIcon name="history" {...p} />;
+const HomeIcon       = (p) => <LucideIcon name="home" {...p} />;
+const MapPin         = (p) => <LucideIcon name="map-pin" {...p} />;
+const Minus          = (p) => <LucideIcon name="minus" {...p} />;
+const PenLine        = (p) => <LucideIcon name="pen-line" {...p} />;
+const Plus           = (p) => <LucideIcon name="plus" {...p} />;
+const QrCode         = (p) => <LucideIcon name="qr-code" {...p} />;
+const RotateCcw      = (p) => <LucideIcon name="rotate-ccw" {...p} />;
+const Search         = (p) => <LucideIcon name="search" {...p} />;
+const Send           = (p) => <LucideIcon name="send" {...p} />;
+const Trash2         = (p) => <LucideIcon name="trash-2" {...p} />;
+const Truck          = (p) => <LucideIcon name="truck" {...p} />;
+const Users          = (p) => <LucideIcon name="users" {...p} />;
+const Wrench         = (p) => <LucideIcon name="wrench" {...p} />;
+const X              = (p) => <LucideIcon name="x" {...p} />;
+const Shield         = (p) => <LucideIcon name="shield" {...p} />;
+const Eye            = (p) => <LucideIcon name="eye" {...p} />;
+const Lock           = (p) => <LucideIcon name="lock" {...p} />;
+const LogOut         = (p) => <LucideIcon name="log-out" {...p} />;
+const Settings       = (p) => <LucideIcon name="settings" {...p} />;
+const Edit           = (p) => <LucideIcon name="edit" {...p} />;
+const Save           = (p) => <LucideIcon name="save" {...p} />;
+const PlusCircle     = (p) => <LucideIcon name="plus-circle" {...p} />;
+const ChevronDown    = (p) => <LucideIcon name="chevron-down" {...p} />;
+const ArrowLeft      = (p) => <LucideIcon name="arrow-left" {...p} />;
+const Gauge          = (p) => <LucideIcon name="gauge" {...p} />;
+const Building       = (p) => <LucideIcon name="building" {...p} />;
+const Factory        = (p) => <LucideIcon name="factory" {...p} />;
+const Power          = (p) => <LucideIcon name="power" {...p} />;
+const CircleSlash    = (p) => <LucideIcon name="circle-slash" {...p} />;
+const List           = (p) => <LucideIcon name="list" {...p} />;
+const Hash           = (p) => <LucideIcon name="hash" {...p} />;
+
+// ============================================================
+// CONFIGURAÇÃO / CONSTANTES
+// ============================================================
+const SENHA_ADMIN = 'axial@2026';
+
+const SUPABASE_URL = 'https://aqztghqxwatxgaouulvh.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_pgXyiVx2Z0cnl7-cxyOgTA_Rg3KaqOY';
+const USAR_MOCKS   = false;
+
+const supabaseClient = (typeof window !== 'undefined' && window.supabase)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+  : null;
+
+// Paleta (mantém o azul institucional da base)
+const COR = {
+  azul:    '#1B3A5C',
+  azulCl:  '#2C5A8A',
+  bg:      '#F4F6F9',
+  card:    '#FFFFFF',
+  borda:   '#E5E7EB',
+  texto:   '#1F2937',
+  cinza:   '#6B7280',
+  verde:   '#16A34A',
+  verdeBg: '#ECFDF5',
+  amarelo: '#D97706',
+  amareloBg:'#FFFBEB',
+  vermelho:'#DC2626',
+  vermelhoBg:'#FEF2F2',
+};
+
+const TIPOS_MAQUINA = [
+  { valor: 'axial',     rotulo: 'Axial (própria)' },
+  { valor: 'prestador', rotulo: 'Prestador de Serviço' },
+];
+
+// ------------------------------------------------------------
+// DADOS-SEMENTE (as 8 máquinas reais da planilha)
+// Usados só na primeira execução, se a tabela estiver vazia.
+// ------------------------------------------------------------
+const MAQUINAS_SEMENTE = [
+  { codigo:'RC-01',  descricao:'Rolo Compactador HAMM',     modelo:'', fabricante:'HAMM',        numeroSerie:'',                  obra:'Galpão Seropédica',      tipo:'axial', possuiHorimetro:true, horimetroInicial:0,    intervaloManutencao:500 },
+  { codigo:'RT-01',  descricao:'Retro John Deere 310L',     modelo:'310L', fabricante:'John Deere', numeroSerie:'1BZ310LAAMD005786', obra:'SEIOP Obra Barra Piraí', tipo:'axial', possuiHorimetro:true, horimetroInicial:4575, intervaloManutencao:500 },
+  { codigo:'AC-01',  descricao:'Acabadora',                 modelo:'', fabricante:'',            numeroSerie:'',                  obra:'Galpão Seropédica',      tipo:'axial', possuiHorimetro:true, horimetroInicial:0,    intervaloManutencao:500 },
+  { codigo:'AB-01',  descricao:'Auto Betoneira',            modelo:'', fabricante:'FIORI',       numeroSerie:'',                  obra:'Galpão Seropédica',      tipo:'axial', possuiHorimetro:true, horimetroInicial:0,    intervaloManutencao:500 },
+  { codigo:'MN-01',  descricao:'Motoniveladora Volvo G710', modelo:'G710', fabricante:'Volvo',   numeroSerie:'5000087',           obra:'SEIOP Obra Barra Piraí', tipo:'axial', possuiHorimetro:true, horimetroInicial:8332, intervaloManutencao:500 },
+  { codigo:'JCB-01', descricao:'Retro JCB',                 modelo:'', fabricante:'JCB',         numeroSerie:'S0R3CXTTVS3579931', obra:'SEIC Obra Mesquita',     tipo:'axial', possuiHorimetro:true, horimetroInicial:5949, intervaloManutencao:500 },
+  { codigo:'JCB-02', descricao:'Retro JCB',                 modelo:'', fabricante:'JCB',         numeroSerie:'S0R3CXTTAS3579932', obra:'SEIC Obra Mesquita',     tipo:'axial', possuiHorimetro:true, horimetroInicial:5902, intervaloManutencao:500 },
+  { codigo:'ESC-01', descricao:'Escavadeira 320D',          modelo:'320D', fabricante:'Caterpillar', numeroSerie:'CAT0320DKLMA00795', obra:'SECID Obra Mesquita', tipo:'axial', possuiHorimetro:true, horimetroInicial:3765, intervaloManutencao:500 },
+];
+
+const OBRAS_SEMENTE = [
+  'Galpão Seropédica',
+  'SEIOP Obra Barra Piraí',
+  'SEIC Obra Mesquita',
+  'SECID Obra Mesquita',
+];
+
+// ============================================================
+// HELPERS DE BANCO
+// ============================================================
+function maquinaDoBanco(l) {
+  return {
+    id: l.id,
+    codigo: l.codigo || '',
+    descricao: l.descricao || '',
+    modelo: l.modelo || '',
+    fabricante: l.fabricante || '',
+    numeroSerie: l.numero_serie || '',
+    obra: l.obra || '',
+    tipo: l.tipo || 'axial',
+    possuiHorimetro: l.possui_horimetro !== false,
+    horimetroInicial: Number(l.horimetro_inicial) || 0,
+    horimetroAtual: Number(l.horimetro_atual) || 0,
+    intervaloManutencao: Number(l.intervalo_manutencao) || 500,
+    horimetroUltimaManutencao: Number(l.horimetro_ultima_manutencao) || 0,
+    statusAtual: l.status_atual || 'funcional',
+    ativa: l.ativa !== false,
+    criadoEm: l.criado_em,
+  };
+}
+
+function maquinaParaBanco(m) {
+  return {
+    codigo: m.codigo,
+    descricao: m.descricao,
+    modelo: m.modelo,
+    fabricante: m.fabricante,
+    numero_serie: m.numeroSerie,
+    obra: m.obra,
+    tipo: m.tipo,
+    possui_horimetro: m.possuiHorimetro,
+    horimetro_inicial: m.horimetroInicial,
+    horimetro_atual: m.horimetroAtual,
+    intervalo_manutencao: m.intervaloManutencao,
+    horimetro_ultima_manutencao: m.horimetroUltimaManutencao,
+    status_atual: m.statusAtual,
+    ativa: m.ativa,
+  };
+}
+
+async function listarMaquinas() {
+  if (!supabaseClient) return [];
+  const { data, error } = await supabaseClient
+    .from('maquinas').select('*').order('descricao', { ascending: true });
+  if (error) { console.error('listarMaquinas', error); return []; }
+  return (data || []).map(maquinaDoBanco);
+}
+
+async function listarObras() {
+  if (!supabaseClient) return [];
+  const { data, error } = await supabaseClient
+    .from('obras').select('*').order('nome', { ascending: true });
+  if (error) { console.error('listarObras', error); return []; }
+  return (data || []).map(o => ({ id: o.id, nome: o.nome, ativa: o.ativa !== false }));
+}
+
+// Semeia tabelas vazias na primeira execução
+async function semearSeVazio() {
+  if (!supabaseClient) return;
+  try {
+    const obras = await listarObras();
+    if (obras.length === 0) {
+      await supabaseClient.from('obras').insert(
+        OBRAS_SEMENTE.map(nome => ({ nome, ativa: true }))
+      );
+    }
+    const maqs = await listarMaquinas();
+    if (maqs.length === 0) {
+      await supabaseClient.from('maquinas').insert(
+        MAQUINAS_SEMENTE.map(m => maquinaParaBanco({
+          ...m,
+          horimetroAtual: m.horimetroInicial,
+          horimetroUltimaManutencao: 0,
+          statusAtual: 'funcional',
+          ativa: true,
+        }))
+      );
+    }
+  } catch (e) { console.error('semear', e); }
+}
+
+// Calcula o estado da manutenção (semáforo) p/ máquinas axial
+// Retorna { cor, rotulo, restante, vencido }
+function calcularManutencao(m) {
+  if (m.tipo !== 'axial' || !m.possuiHorimetro) {
+    return { cor: COR.cinza, rotulo: 'N/A', restante: null, vencido: false };
+  }
+  const desdeUltima = m.horimetroAtual - (m.horimetroUltimaManutencao || 0);
+  const intervalo = m.intervaloManutencao || 500;
+  const restante = intervalo - desdeUltima;
+  if (restante <= 0)         return { cor: COR.vermelho, rotulo: 'Vencida',  restante, vencido: true };
+  if (restante <= intervalo * 0.15) return { cor: COR.amarelo, rotulo: 'Próxima', restante, vencido: false };
+  return { cor: COR.verde, rotulo: 'Em dia', restante, vencido: false };
+}
+
+// ============================================================
+// ESTILOS COMPARTILHADOS
+// ============================================================
+const S = {
+  campo: {
+    width:'100%', boxSizing:'border-box', padding:'11px 13px', fontSize:15,
+    border:`1.5px solid ${COR.borda}`, borderRadius:10, outline:'none',
+    fontFamily:'inherit', color:COR.texto, background:'#fff', transition:'border-color .15s',
+  },
+  rotulo: { display:'block', fontSize:12.5, fontWeight:700, color:COR.cinza, marginBottom:6, letterSpacing:.2, textTransform:'uppercase' },
+  botaoPrim: {
+    display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8,
+    background:COR.azul, color:'#fff', border:'none', borderRadius:10,
+    padding:'12px 18px', fontSize:15, fontWeight:700, cursor:'pointer',
+    fontFamily:'inherit', transition:'background .15s',
+  },
+  botaoSec: {
+    display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8,
+    background:'#fff', color:COR.azul, border:`1.5px solid ${COR.borda}`, borderRadius:10,
+    padding:'12px 18px', fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+  },
+  card: { background:COR.card, border:`1px solid ${COR.borda}`, borderRadius:14, padding:16, boxShadow:'0 1px 2px rgba(16,24,40,.04)' },
+};
+
+function Badge({ cor, bg, children, style }) {
+  return (
+    <span style={{
+      display:'inline-flex', alignItems:'center', gap:5, padding:'3px 10px',
+      borderRadius:999, fontSize:12, fontWeight:700, color:cor, background:bg,
+      whiteSpace:'nowrap', ...style,
+    }}>{children}</span>
+  );
+}
+
+function BadgeTipo({ tipo }) {
+  return tipo === 'axial'
+    ? <Badge cor={COR.azul} bg="#EFF6FF"><Factory size={12} /> Axial</Badge>
+    : <Badge cor="#7C3AED" bg="#F5F3FF"><Hash size={12} /> Prestador</Badge>;
+}
+
+function BadgeManutencao({ maquina }) {
+  const m = calcularManutencao(maquina);
+  if (m.rotulo === 'N/A') return <Badge cor={COR.cinza} bg="#F3F4F6">N/A</Badge>;
+  const bg = m.vencido ? COR.vermelhoBg : (m.rotulo === 'Próxima' ? COR.amareloBg : COR.verdeBg);
+  return (
+    <Badge cor={m.cor} bg={bg}>
+      <Wrench size={12} /> {m.rotulo}
+      {m.restante != null && m.restante > 0 && <span style={{opacity:.7, fontWeight:600}}>· {m.restante}h</span>}
+    </Badge>
+  );
+}
+
+// ============================================================
+// FORMULÁRIO DE MÁQUINA (adicionar / editar)
+// ============================================================
+function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
+  const ed = !!maquina;
+  const [f, setF] = useState(maquina || {
+    codigo:'', descricao:'', modelo:'', fabricante:'', numeroSerie:'',
+    obra: (obras[0] && obras[0].nome) || '', tipo:'axial',
+    possuiHorimetro:true, horimetroInicial:0, horimetroAtual:0,
+    intervaloManutencao:500, horimetroUltimaManutencao:0,
+    statusAtual:'funcional', ativa:true,
+  });
+  const [erro, setErro] = useState('');
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+
+  function salvar() {
+    if (!f.descricao.trim()) { setErro('A descrição é obrigatória.'); return; }
+    const dados = { ...f };
+    // Se for novo, horímetro atual começa igual ao inicial
+    if (!ed) dados.horimetroAtual = Number(f.horimetroInicial) || 0;
+    onSalvar(dados);
+  }
+
+  const inputNum = (k, label, sufixo) => (
+    <div>
+      <label style={S.rotulo}>{label}</label>
+      <div style={{position:'relative'}}>
+        <input type="number" inputMode="numeric" value={f[k]} style={S.campo}
+          onChange={e => set(k, e.target.value === '' ? '' : Number(e.target.value))} />
+        {sufixo && <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{sufixo}</span>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{maxWidth:680, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:20}}>
+        <button onClick={onCancelar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar">
+          <ArrowLeft size={20} />
+        </button>
+        <h2 style={{margin:0, fontSize:22, color:COR.azul, fontWeight:800}}>
+          {ed ? 'Editar máquina' : 'Nova máquina'}
+        </h2>
+      </div>
+
+      <div style={{...S.card, display:'flex', flexDirection:'column', gap:16}}>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
+          <div>
+            <label style={S.rotulo}>Código</label>
+            <input value={f.codigo} placeholder="Ex: JCB-01" style={S.campo} onChange={e => set('codigo', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.rotulo}>Tipo</label>
+            <select value={f.tipo} style={S.campo} onChange={e => set('tipo', e.target.value)}>
+              {TIPOS_MAQUINA.map(t => <option key={t.valor} value={t.valor}>{t.rotulo}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label style={S.rotulo}>Descrição *</label>
+          <input value={f.descricao} placeholder="Ex: Retro JCB" style={S.campo} onChange={e => set('descricao', e.target.value)} />
+        </div>
+
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
+          <div>
+            <label style={S.rotulo}>Fabricante</label>
+            <input value={f.fabricante} style={S.campo} onChange={e => set('fabricante', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.rotulo}>Modelo</label>
+            <input value={f.modelo} style={S.campo} onChange={e => set('modelo', e.target.value)} />
+          </div>
+        </div>
+
+        <div>
+          <label style={S.rotulo}>Número de série</label>
+          <input value={f.numeroSerie} style={S.campo} onChange={e => set('numeroSerie', e.target.value)} />
+        </div>
+
+        <div>
+          <label style={S.rotulo}>Obra vinculada</label>
+          <select value={f.obra} style={S.campo} onChange={e => set('obra', e.target.value)}>
+            <option value="">— selecionar —</option>
+            {obras.filter(o => o.ativa).map(o => <option key={o.id} value={o.nome}>{o.nome}</option>)}
+          </select>
+        </div>
+
+        <div style={{height:1, background:COR.borda, margin:'2px 0'}} />
+
+        <label style={{display:'flex', alignItems:'center', gap:10, cursor:'pointer', fontSize:15, fontWeight:600, color:COR.texto}}>
+          <input type="checkbox" checked={f.possuiHorimetro} onChange={e => set('possuiHorimetro', e.target.checked)} style={{width:18, height:18}} />
+          Possui horímetro
+        </label>
+
+        {f.possuiHorimetro && (
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
+            {inputNum('horimetroInicial', 'Horímetro inicial', 'h')}
+            {ed && inputNum('horimetroAtual', 'Horímetro atual', 'h')}
+          </div>
+        )}
+
+        {f.tipo === 'axial' && (
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
+            {inputNum('intervaloManutencao', 'Intervalo de manutenção', 'h')}
+            {inputNum('horimetroUltimaManutencao', 'Horímetro na última revisão', 'h')}
+          </div>
+        )}
+
+        {erro && <div style={{color:COR.vermelho, fontSize:13.5, fontWeight:600}}>{erro}</div>}
+
+        <div style={{display:'flex', gap:10, marginTop:4}}>
+          <button onClick={salvar} style={{...S.botaoPrim, flex:1}}><Save size={18} /> Salvar</button>
+          <button onClick={onCancelar} style={S.botaoSec}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CARD DE MÁQUINA (item da lista)
+// ============================================================
+function CardMaquina({ m, onEditar, onToggleAtiva }) {
+  return (
+    <div style={{...S.card, padding:0, overflow:'hidden', opacity: m.ativa ? 1 : 0.62}}>
+      <div style={{display:'flex', alignItems:'stretch'}}>
+        <div style={{width:6, background: m.ativa ? COR.azul : COR.cinza}} />
+        <div style={{flex:1, padding:'14px 16px'}}>
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10}}>
+            <div style={{minWidth:0}}>
+              <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+                {m.codigo && <span style={{fontSize:12.5, fontWeight:800, color:COR.azulCl, background:'#EFF6FF', padding:'2px 8px', borderRadius:6}}>{m.codigo}</span>}
+                <h3 style={{margin:0, fontSize:16.5, fontWeight:800, color:COR.texto}}>{m.descricao}</h3>
+              </div>
+              <div style={{fontSize:13, color:COR.cinza, marginTop:4}}>
+                {[m.fabricante, m.modelo].filter(Boolean).join(' · ') || '—'}
+                {m.numeroSerie && <span style={{display:'block', marginTop:2, fontFamily:'monospace', fontSize:12}}>NS: {m.numeroSerie}</span>}
+              </div>
+            </div>
+            <div style={{display:'flex', flexDirection:'column', gap:6, alignItems:'flex-end'}}>
+              <BadgeTipo tipo={m.tipo} />
+              {!m.ativa && <Badge cor={COR.cinza} bg="#F3F4F6"><CircleSlash size={12}/> Inativa</Badge>}
+            </div>
+          </div>
+
+          <div style={{display:'flex', alignItems:'center', gap:14, marginTop:12, flexWrap:'wrap', fontSize:13}}>
+            {m.obra && <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.cinza}}><Building size={14}/> {m.obra}</span>}
+            {m.possuiHorimetro
+              ? <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.texto, fontWeight:700}}><Gauge size={14}/> {m.horimetroAtual} h</span>
+              : <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.cinza}}><Gauge size={14}/> sem horímetro</span>}
+            {m.tipo === 'axial' && <BadgeManutencao maquina={m} />}
+          </div>
+
+          <div style={{display:'flex', gap:8, marginTop:14}}>
+            <button onClick={() => onEditar(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1}}><Edit size={15}/> Editar</button>
+            <button onClick={() => onToggleAtiva(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, color: m.ativa ? COR.vermelho : COR.verde, borderColor: m.ativa ? '#FECACA' : '#A7F3D0'}}>
+              {m.ativa ? <><CircleSlash size={15}/> Inativar</> : <><Power size={15}/> Reativar</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// GESTÃO DE OBRAS (modal-like inline)
+// ============================================================
+function GestaoObras({ obras, onCriar, onRenomear, onExcluir, onFechar }) {
+  const [novo, setNovo] = useState('');
+  const [editId, setEditId] = useState(null);
+  const [editNome, setEditNome] = useState('');
+
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.45)', zIndex:500, display:'flex', alignItems:'flex-end', justifyContent:'center'}} onClick={onFechar}>
+      <div onClick={e => e.stopPropagation()} style={{background:'#fff', width:'100%', maxWidth:560, borderRadius:'18px 18px 0 0', padding:20, maxHeight:'85vh', overflow:'auto'}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16}}>
+          <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul, display:'flex', alignItems:'center', gap:8}}><Building size={20}/> Obras</h3>
+          <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:8}}><X size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', gap:8, marginBottom:16}}>
+          <input value={novo} placeholder="Nome da nova obra" style={S.campo} onChange={e => setNovo(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && novo.trim()) { onCriar(novo.trim()); setNovo(''); } }} />
+          <button onClick={() => { if (novo.trim()) { onCriar(novo.trim()); setNovo(''); } }} style={{...S.botaoPrim, padding:'11px 16px'}}><Plus size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', flexDirection:'column', gap:8}}>
+          {obras.length === 0 && <p style={{color:COR.cinza, textAlign:'center', padding:'20px 0'}}>Nenhuma obra cadastrada.</p>}
+          {obras.map(o => (
+            <div key={o.id} style={{display:'flex', alignItems:'center', gap:8, padding:'10px 12px', border:`1px solid ${COR.borda}`, borderRadius:10}}>
+              {editId === o.id ? (
+                <>
+                  <input value={editNome} style={{...S.campo, padding:'7px 10px'}} autoFocus onChange={e => setEditNome(e.target.value)} />
+                  <button onClick={() => { onRenomear(o.id, editNome.trim()); setEditId(null); }} style={{...S.botaoPrim, padding:'7px 12px'}}><Save size={16}/></button>
+                  <button onClick={() => setEditId(null)} style={{...S.botaoSec, padding:'7px 12px'}}><X size={16}/></button>
+                </>
+              ) : (
+                <>
+                  <Building size={16} color={COR.cinza}/>
+                  <span style={{flex:1, fontWeight:600, color:COR.texto}}>{o.nome}</span>
+                  <button onClick={() => { setEditId(o.id); setEditNome(o.nome); }} style={{...S.botaoSec, padding:'6px 10px'}}><Edit size={15}/></button>
+                  <button onClick={() => onExcluir(o)} style={{...S.botaoSec, padding:'6px 10px', color:COR.vermelho, borderColor:'#FECACA'}}><Trash2 size={15}/></button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+        <p style={{fontSize:12, color:COR.cinza, marginTop:14, lineHeight:1.5}}>
+          As obras aparecem como opção no cadastro de máquinas e servem para agrupar os relatórios.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// TELA: GESTÃO DE MÁQUINAS (lista + busca + filtros)
+// ============================================================
+function TelaMaquinas({ maquinas, obras, onNova, onEditar, onToggleAtiva, onAbrirObras, carregando }) {
+  const [busca, setBusca] = useState('');
+  const [fTipo, setFTipo] = useState('todos');
+  const [fObra, setFObra] = useState('todas');
+  const [mostrarInativas, setMostrarInativas] = useState(false);
+
+  const filtradas = maquinas.filter(m => {
+    if (!mostrarInativas && !m.ativa) return false;
+    if (fTipo !== 'todos' && m.tipo !== fTipo) return false;
+    if (fObra !== 'todas' && m.obra !== fObra) return false;
+    if (busca.trim()) {
+      const q = busca.toLowerCase();
+      const alvo = `${m.codigo} ${m.descricao} ${m.fabricante} ${m.modelo} ${m.numeroSerie} ${m.obra}`.toLowerCase();
+      if (!alvo.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const totAtivas = maquinas.filter(m => m.ativa).length;
+  const totInativas = maquinas.length - totAtivas;
+
+  return (
+    <div style={{maxWidth:760, margin:'0 auto'}}>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom:6, flexWrap:'wrap'}}>
+        <div>
+          <h2 style={{margin:0, fontSize:24, fontWeight:800, color:COR.azul}}>Máquinas</h2>
+          <p style={{margin:'4px 0 0', color:COR.cinza, fontSize:14}}>{totAtivas} ativas{totInativas ? ` · ${totInativas} inativas` : ''}</p>
+        </div>
+        <div style={{display:'flex', gap:8}}>
+          <button onClick={onAbrirObras} style={S.botaoSec}><Building size={18}/> Obras</button>
+          <button onClick={onNova} style={S.botaoPrim}><Plus size={18}/> Nova máquina</button>
+        </div>
+      </div>
+
+      <div style={{margin:'18px 0', display:'flex', flexDirection:'column', gap:10}}>
+        <div style={{position:'relative'}}>
+          <Search size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}} />
+          <input value={busca} placeholder="Buscar por código, descrição, série…" style={{...S.campo, paddingLeft:42}} onChange={e => setBusca(e.target.value)} />
+        </div>
+        <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
+          <select value={fTipo} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFTipo(e.target.value)}>
+            <option value="todos">Todos os tipos</option>
+            <option value="axial">Axial</option>
+            <option value="prestador">Prestador</option>
+          </select>
+          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFObra(e.target.value)}>
+            <option value="todas">Todas as obras</option>
+            {obras.map(o => <option key={o.id} value={o.nome}>{o.nome}</option>)}
+          </select>
+          {totInativas > 0 && (
+            <label style={{display:'flex', alignItems:'center', gap:7, fontSize:13.5, color:COR.cinza, fontWeight:600, cursor:'pointer', marginLeft:'auto'}}>
+              <input type="checkbox" checked={mostrarInativas} onChange={e => setMostrarInativas(e.target.checked)} style={{width:16, height:16}}/>
+              Mostrar inativas
+            </label>
+          )}
+        </div>
+      </div>
+
+      {carregando ? (
+        <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando máquinas…</p>
+      ) : filtradas.length === 0 ? (
+        <div style={{textAlign:'center', padding:'48px 20px', color:COR.cinza}}>
+          <Factory size={40} color={COR.borda} />
+          <p style={{marginTop:12, fontWeight:600}}>Nenhuma máquina encontrada.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:12}}>
+          {filtradas.map(m => <CardMaquina key={m.id} m={m} onEditar={onEditar} onToggleAtiva={onToggleAtiva} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// LOGIN ADMIN
+// ============================================================
+function LoginAdmin({ onEntrar }) {
+  const [senha, setSenha] = useState('');
+  const [erro, setErro] = useState(false);
+  function entrar() {
+    if (senha === SENHA_ADMIN) onEntrar();
+    else { setErro(true); setSenha(''); }
+  }
+  return (
+    <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:20}}>
+      <div style={{...S.card, maxWidth:380, width:'100%', textAlign:'center', padding:28}}>
+        <div style={{width:60, height:60, borderRadius:16, background:COR.azul, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px'}}>
+          <Shield size={30} color="#fff" />
+        </div>
+        <h2 style={{margin:'0 0 6px', fontSize:22, fontWeight:800, color:COR.azul}}>Painel da Frota</h2>
+        <p style={{margin:'0 0 20px', color:COR.cinza, fontSize:14}}>Acesso administrativo</p>
+        <div style={{position:'relative', marginBottom:12}}>
+          <Lock size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+          <input type="password" value={senha} placeholder="Senha" autoFocus
+            style={{...S.campo, paddingLeft:42, borderColor: erro ? COR.vermelho : COR.borda}}
+            onChange={e => { setSenha(e.target.value); setErro(false); }}
+            onKeyDown={e => e.key === 'Enter' && entrar()} />
+        </div>
+        {erro && <p style={{color:COR.vermelho, fontSize:13, margin:'0 0 12px', fontWeight:600}}>Senha incorreta.</p>}
+        <button onClick={entrar} style={{...S.botaoPrim, width:'100%'}}>Entrar</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// APP RAIZ
+// ============================================================
+function App() {
+  const [logado, setLogado] = useState(false);
+  const [maquinas, setMaquinas] = useState([]);
+  const [obras, setObras] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [tela, setTela] = useState('lista');      // 'lista' | 'form'
+  const [editando, setEditando] = useState(null);  // máquina em edição
+  const [showObras, setShowObras] = useState(false);
+  const [toast, setToast] = useState('');
+
+  function aviso(msg) { setToast(msg); setTimeout(() => setToast(''), 2600); }
+
+  async function recarregar() {
+    const [ms, os] = await Promise.all([listarMaquinas(), listarObras()]);
+    setMaquinas(ms); setObras(os); setCarregando(false);
+  }
+
+  useEffect(() => {
+    if (!logado) return;
+    let canal;
+    (async () => {
+      setCarregando(true);
+      await semearSeVazio();
+      await recarregar();
+      if (supabaseClient) {
+        canal = supabaseClient.channel('frota')
+          .on('postgres_changes', { event:'*', schema:'public', table:'maquinas' }, recarregar)
+          .on('postgres_changes', { event:'*', schema:'public', table:'obras' }, recarregar)
+          .subscribe();
+      }
+    })();
+    return () => { if (canal) supabaseClient.removeChannel(canal); };
+  }, [logado]);
+
+  // --- CRUD máquinas ---
+  async function salvarMaquina(dados) {
+    if (!supabaseClient) return;
+    const payload = maquinaParaBanco(dados);
+    if (dados.id) {
+      await supabaseClient.from('maquinas').update(payload).eq('id', dados.id);
+      aviso('Máquina atualizada.');
+    } else {
+      await supabaseClient.from('maquinas').insert(payload);
+      aviso('Máquina cadastrada.');
+    }
+    setTela('lista'); setEditando(null);
+    recarregar();
+  }
+  async function toggleAtiva(m) {
+    if (!supabaseClient) return;
+    await supabaseClient.from('maquinas').update({ ativa: !m.ativa }).eq('id', m.id);
+    aviso(m.ativa ? 'Máquina inativada.' : 'Máquina reativada.');
+    recarregar();
+  }
+
+  // --- CRUD obras ---
+  async function criarObra(nome) {
+    if (!supabaseClient) return;
+    await supabaseClient.from('obras').insert({ nome, ativa:true });
+    recarregar();
+  }
+  async function renomearObra(id, nome) {
+    if (!nome || !supabaseClient) return;
+    await supabaseClient.from('obras').update({ nome }).eq('id', id);
+    recarregar();
+  }
+  async function excluirObra(o) {
+    if (!supabaseClient) return;
+    const emUso = maquinas.filter(m => m.obra === o.nome).length;
+    const msg = emUso
+      ? `A obra "${o.nome}" está vinculada a ${emUso} máquina(s). Excluir mesmo assim? As máquinas ficarão sem obra.`
+      : `Excluir a obra "${o.nome}"?`;
+    if (!window.confirm(msg)) return;
+    await supabaseClient.from('obras').delete().eq('id', o.id);
+    recarregar();
+  }
+
+  if (!logado) return <LoginAdmin onEntrar={() => setLogado(true)} />;
+
+  return (
+    <div style={{minHeight:'100vh', background:COR.bg}}>
+      {/* Cabeçalho */}
+      <header style={{background:COR.azul, color:'#fff', padding:'14px 20px', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+        <div style={{display:'flex', alignItems:'center', gap:10}}>
+          <div style={{width:34, height:34, borderRadius:9, background:'rgba(255,255,255,.15)', display:'flex', alignItems:'center', justifyContent:'center'}}>
+            <Factory size={20} color="#fff"/>
+          </div>
+          <div>
+            <div style={{fontWeight:800, fontSize:16, lineHeight:1}}>Gestão de Frota</div>
+            <div style={{fontSize:11.5, opacity:.7}}>Construtora Axial</div>
+          </div>
+        </div>
+        <button onClick={() => setLogado(false)} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+          <LogOut size={16}/> Sair
+        </button>
+      </header>
+
+      <main style={{padding:'24px 16px 60px'}}>
+        {tela === 'lista' && (
+          <TelaMaquinas
+            maquinas={maquinas} obras={obras} carregando={carregando}
+            onNova={() => { setEditando(null); setTela('form'); }}
+            onEditar={(m) => { setEditando(m); setTela('form'); }}
+            onToggleAtiva={toggleAtiva}
+            onAbrirObras={() => setShowObras(true)}
+          />
+        )}
+        {tela === 'form' && (
+          <FormMaquina
+            maquina={editando} obras={obras}
+            onSalvar={salvarMaquina}
+            onCancelar={() => { setTela('lista'); setEditando(null); }}
+          />
+        )}
+      </main>
+
+      {showObras && (
+        <GestaoObras obras={obras} onCriar={criarObra} onRenomear={renomearObra} onExcluir={excluirObra} onFechar={() => setShowObras(false)} />
+      )}
+
+      {toast && (
+        <div style={{position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', background:COR.azul, color:'#fff', padding:'12px 22px', borderRadius:999, fontSize:14, fontWeight:600, boxShadow:'0 8px 24px rgba(0,0,0,.2)', zIndex:600, display:'flex', alignItems:'center', gap:8}}>
+          <CheckCircle2 size={18}/> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const _root = ReactDOM.createRoot(document.getElementById('root'));
+_root.render(<App />);
+  </script>
+</body>
+</html>
