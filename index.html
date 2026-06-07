@@ -1382,11 +1382,18 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
                     <button onClick={() => { setFoto(null); setFotoPreview(''); }} style={{position:'absolute', top:8, right:8, background:'rgba(0,0,0,.6)', color:'#fff', border:'none', borderRadius:8, padding:'6px 10px', fontSize:12.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:5}}><X size={14}/> Trocar</button>
                   </div>
                 ) : (
-                  <label style={{display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:8, border:`2px dashed ${COR.borda}`, borderRadius:12, padding:'28px 16px', cursor:'pointer', color:COR.cinza}}>
-                    <Camera size={30} color={COR.azulCl}/>
-                    <span style={{fontSize:14, fontWeight:600}}>Tirar / escolher foto</span>
-                    <input type="file" accept="image/*" capture="environment" onChange={escolherFoto} style={{display:'none'}}/>
-                  </label>
+                  <div style={{display:'flex', gap:10}}>
+                    <label style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:6, border:`2px dashed ${COR.borda}`, borderRadius:12, padding:'24px 12px', cursor:'pointer', color:COR.cinza}}>
+                      <Camera size={28} color={COR.azulCl}/>
+                      <span style={{fontSize:13.5, fontWeight:600}}>Tirar foto</span>
+                      <input type="file" accept="image/*" capture="environment" onChange={escolherFoto} style={{display:'none'}}/>
+                    </label>
+                    <label style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:6, border:`2px dashed ${COR.borda}`, borderRadius:12, padding:'24px 12px', cursor:'pointer', color:COR.cinza}}>
+                      <Plus size={28} color={COR.azulCl}/>
+                      <span style={{fontSize:13.5, fontWeight:600}}>Galeria</span>
+                      <input type="file" accept="image/*" onChange={escolherFoto} style={{display:'none'}}/>
+                    </label>
+                  </div>
                 )}
               </div>
             )}
@@ -1443,9 +1450,14 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
                   <button onClick={() => removerExtra(i)} style={{position:'absolute', top:3, right:3, background:'rgba(0,0,0,.6)', color:'#fff', border:'none', borderRadius:6, width:22, height:22, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center'}}><X size={13}/></button>
                 </div>
               ))}
-              <label style={{width:88, height:88, borderRadius:10, border:`2px dashed ${COR.borda}`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:4, cursor:'pointer', color:COR.cinza}}>
+              <label style={{width:88, height:88, borderRadius:10, border:`2px dashed ${COR.borda}`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, cursor:'pointer', color:COR.cinza}}>
                 <Camera size={22} color={COR.azulCl}/>
-                <span style={{fontSize:11, fontWeight:600}}>Adicionar</span>
+                <span style={{fontSize:11, fontWeight:600}}>Tirar foto</span>
+                <input type="file" accept="image/*" capture="environment" onChange={addExtras} style={{display:'none'}}/>
+              </label>
+              <label style={{width:88, height:88, borderRadius:10, border:`2px dashed ${COR.borda}`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, cursor:'pointer', color:COR.cinza}}>
+                <Plus size={22} color={COR.azulCl}/>
+                <span style={{fontSize:11, fontWeight:600}}>Galeria</span>
                 <input type="file" accept="image/*" multiple onChange={addExtras} style={{display:'none'}}/>
               </label>
             </div>
