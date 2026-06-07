@@ -816,17 +816,27 @@ async function gerarPdfTodosRegistros(registrosPeriodo, ini, fim) {
     if (r.observacao) { doc.setFont('helvetica','italic'); doc.setTextColor(90);
       const ol = doc.splitTextToSize(`Obs: ${r.observacao}`, W-30); doc.text(ol, 14, y); doc.setTextColor(30); doc.setFont('helvetica','normal'); y += ol.length*5; }
 
-    // foto do painel (miniatura)
-    if (r.fotoUrl) {
-      const d = await imagemParaDataURL(r.fotoUrl);
-      if (d) {
-        if (y > 225) { doc.addPage(); y = 20; }
-        try { doc.addImage(d, 'JPEG', 14, y, 50, 38); y += 42; } catch(e) {}
+    // fotos: painel + adicionais, em grade de miniaturas
+    const urls = [];
+    if (r.fotoUrl) urls.push(r.fotoUrl);
+    for (const u of (r.fotosExtras || [])) urls.push(u);
+    if (urls.length) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(40);
+      if (y > 270) { doc.addPage(); y = 20; }
+      doc.text('Fotos:', 14, y); y += 5;
+      const fw = 44, fh = 33, gap = 4, perRow = 4;
+      let col = 0, x = 14, rowMaxBottom = y;
+      for (const u of urls) {
+        const d = await imagemParaDataURL(u);
+        if (!d) continue;
+        if (col === perRow) { col = 0; x = 14; y = rowMaxBottom + gap; }
+        if (y + fh > 287) { doc.addPage(); y = 20; col = 0; x = 14; rowMaxBottom = y; }
+        try { doc.addImage(d, 'JPEG', x, y, fw, fh); } catch(e) {}
+        x += fw + gap; col++; rowMaxBottom = Math.max(rowMaxBottom, y + fh);
       }
+      y = rowMaxBottom;
     }
-    if ((r.fotosExtras||[]).length) { doc.setTextColor(120); doc.setFontSize(8.5);
-      doc.text(`(+ ${r.fotosExtras.length} foto(s) adicional(is) no sistema)`, 14, y); doc.setTextColor(30); doc.setFontSize(9.5); y += 5; }
-    y += 4;
+    y += 6;
   }
 
   doc.save(`checklists_${new Date().toISOString().slice(0,10)}.pdf`);
