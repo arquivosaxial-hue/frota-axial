@@ -456,6 +456,53 @@ async function enviarFoto(arquivo) {
   return data.publicUrl;
 }
 
+// Extrai o caminho interno do arquivo a partir da URL pública do Storage
+function caminhoDaFotoUrl(url) {
+  if (!url) return null;
+  const marca = '/object/public/fotos/';
+  const i = url.indexOf(marca);
+  if (i === -1) return null;
+  return decodeURIComponent(url.slice(i + marca.length));
+}
+
+// Exclui todos os registros de um período + as fotos no Storage
+async function excluirRegistrosPeriodo(registros, ini, fim) {
+  if (!supabaseClient) return { apagados: 0 };
+  const iniMs = ini ? new Date(ini + 'T00:00:00').getTime() : -Infinity;
+  const fimMs = fim ? new Date(fim + 'T23:59:59').getTime() : Infinity;
+  const alvo = registros.filter(r => {
+    const t = new Date(r.criadoEm).getTime();
+    return t >= iniMs && t <= fimMs;
+  });
+  if (alvo.length === 0) return { apagados: 0 };
+
+  // 1) junta os caminhos de todas as fotos (painel + extras)
+  const caminhos = [];
+  for (const r of alvo) {
+    const p = caminhoDaFotoUrl(r.fotoUrl); if (p) caminhos.push(p);
+    for (const u of (r.fotosExtras || [])) { const c = caminhoDaFotoUrl(u); if (c) caminhos.push(c); }
+  }
+  if (caminhos.length) {
+    try { await supabaseClient.storage.from('fotos').remove(caminhos); }
+    catch (e) { console.error('remover fotos', e); }
+  }
+
+  // 2) apaga os registros (em lotes por id)
+  const ids = alvo.map(r => r.id);
+  const { error } = await supabaseClient.from('registros').delete().in('id', ids);
+  if (error) { console.error('excluir registros', error); throw error; }
+  return { apagados: alvo.length };
+}
+
+// Lista máquinas que precisam de atenção de manutenção (próxima ou vencida)
+function maquinasParaRevisao(maquinas) {
+  return maquinas
+    .filter(m => m.ativa)
+    .map(m => ({ m, mn: calcularManutencao(m) }))
+    .filter(x => x.mn.rotulo === 'Próxima' || x.mn.rotulo === 'Vencida')
+    .sort((a, b) => (a.mn.restante ?? 0) - (b.mn.restante ?? 0));
+}
+
 // Formata minutos como "Xh Ymin"
 function formatarDuracao(min) {
   if (min == null) return '—';
@@ -1027,6 +1074,10 @@ function TelaMaquinas({ maquinas, obras, onNova, onEditar, onToggleAtiva, onAbri
           <button onClick={onNova} style={S.botaoPrim}><Plus size={18}/> Nova máquina</button>
         </div>
       </div>
+
+      {maquinasParaRevisao(maquinas).length > 0 && (
+        <div style={{margin:'16px 0 0'}}><CardRevisao maquinas={maquinas} compacto /></div>
+      )}
 
       <div style={{margin:'18px 0', display:'flex', flexDirection:'column', gap:10}}>
         <div style={{position:'relative'}}>
@@ -1651,6 +1702,202 @@ function ConfigChecklist({ itens, onSalvar, onFechar }) {
   );
 }
 
+
+// ============================================================
+// ADMIN: CARD DE REVISÃO (reutilizável)
+// ============================================================
+function CardRevisao({ maquinas, compacto }) {
+  const lista = maquinasParaRevisao(maquinas);
+  if (lista.length === 0) {
+    return (
+      <div style={{...S.card, display:'flex', alignItems:'center', gap:10}}>
+        <CheckCircle2 size={20} color={COR.verde}/>
+        <span style={{fontSize:14, color:COR.texto, fontWeight:600}}>Nenhuma máquina pendente de revisão.</span>
+      </div>
+    );
+  }
+  return (
+    <div style={{...S.card, padding:0, overflow:'hidden'}}>
+      <div style={{display:'flex', alignItems:'center', gap:9, padding:'13px 16px', borderBottom:`1px solid ${COR.borda}`, background:'#FFFBEB'}}>
+        <Wrench size={18} color={COR.amarelo}/>
+        <span style={{fontSize:15, fontWeight:800, color:'#92400E'}}>Revisões pendentes</span>
+        <span style={{marginLeft:'auto', fontSize:12.5, fontWeight:700, color:'#92400E', background:'#FDE68A', padding:'2px 9px', borderRadius:999}}>{lista.length}</span>
+      </div>
+      <div style={{display:'flex', flexDirection:'column'}}>
+        {lista.map(({ m, mn }) => (
+          <div key={m.id} style={{display:'flex', alignItems:'center', gap:10, padding:'11px 16px', borderBottom:`1px solid ${COR.bg}`}}>
+            <div style={{flex:1, minWidth:0}}>
+              <div style={{fontSize:14.5, fontWeight:700, color:COR.texto}}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</div>
+              {!compacto && <div style={{fontSize:12, color:COR.cinza, marginTop:1}}>{m.obra || 'Sem obra'} · {m.horimetroAtual}h</div>}
+            </div>
+            {mn.vencido
+              ? <Badge cor={COR.vermelho} bg={COR.vermelhoBg}><AlertTriangle size={11}/> Vencida</Badge>
+              : <Badge cor={COR.amarelo} bg={COR.amareloBg}><Clock size={11}/> Faltam {mn.restante}h</Badge>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN: TELA DE REGISTROS (checklists recebidos)
+// ============================================================
+function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
+  const hoje = new Date().toISOString().slice(0,10);
+  const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+  const [ini, setIni] = useState(mesPassado);
+  const [fim, setFim] = useState(hoje);
+  const [expandido, setExpandido] = useState(null);
+  const [mostrarExcluir, setMostrarExcluir] = useState(false);
+  const [senha, setSenha] = useState('');
+  const [erroSenha, setErroSenha] = useState('');
+  const [excluindo, setExcluindo] = useState(false);
+
+  const noPeriodo = registros.filter(r => {
+    const t = new Date(r.criadoEm).getTime();
+    const a = ini ? new Date(ini+'T00:00:00').getTime() : -Infinity;
+    const b = fim ? new Date(fim+'T23:59:59').getTime() : Infinity;
+    return t >= a && t <= b;
+  });
+
+  const mapaMaquinas = {};
+  for (const m of maquinas) mapaMaquinas[m.id] = m;
+
+  async function confirmarExclusao() {
+    setErroSenha('');
+    if (senha !== SENHA_ADMIN) { setErroSenha('Senha incorreta.'); return; }
+    setExcluindo(true);
+    try {
+      const r = await onExcluirPeriodo(ini, fim);
+      setMostrarExcluir(false); setSenha('');
+      alert(`${r.apagados} registro(s) excluído(s) e fotos removidas.`);
+    } catch (e) {
+      setErroSenha('Erro ao excluir. Tente novamente.');
+    } finally { setExcluindo(false); }
+  }
+
+  return (
+    <div style={{maxWidth:820, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Registros recebidos</h2>
+      </div>
+
+      {/* Revisões pendentes */}
+      <div style={{marginBottom:18}}><CardRevisao maquinas={maquinas} /></div>
+
+      {/* Filtro de período */}
+      <div style={{...S.card, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
+        <div>
+          <label style={S.rotulo}>De</label>
+          <input type="date" value={ini} style={{...S.campo, width:'auto'}} onChange={e => setIni(e.target.value)}/>
+        </div>
+        <div>
+          <label style={S.rotulo}>Até</label>
+          <input type="date" value={fim} style={{...S.campo, width:'auto'}} onChange={e => setFim(e.target.value)}/>
+        </div>
+        <span style={{fontSize:13.5, color:COR.cinza, fontWeight:600, alignSelf:'center'}}>{noPeriodo.length} registro(s)</span>
+        <button onClick={() => setMostrarExcluir(true)} disabled={noPeriodo.length===0} style={{...S.botaoSec, color:COR.vermelho, borderColor:'#FECACA', opacity:noPeriodo.length?1:.5, marginLeft:'auto'}}>
+          <Trash2 size={17}/> Excluir período
+        </button>
+      </div>
+
+      {/* Lista de registros */}
+      {noPeriodo.length === 0 ? (
+        <div style={{textAlign:'center', padding:'48px 20px', color:COR.cinza}}>
+          <FileText size={40} color={COR.borda}/>
+          <p style={{marginTop:12, fontWeight:600}}>Nenhum registro neste período.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:10}}>
+          {noPeriodo.map(r => {
+            const aberto = expandido === r.id;
+            const func = r.status === 'funcional';
+            const nokCount = (r.checklist || []).filter(c => c.status === 'nok').length;
+            return (
+              <div key={r.id} style={{...S.card, padding:0, overflow:'hidden'}}>
+                <div onClick={() => setExpandido(aberto ? null : r.id)} style={{display:'flex', alignItems:'center', gap:12, padding:'13px 16px', cursor:'pointer'}}>
+                  <div style={{width:40, height:40, borderRadius:10, background: func?COR.verdeBg:COR.vermelhoBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                    {func ? <CheckCircle2 size={20} color={COR.verde}/> : <AlertTriangle size={20} color={COR.vermelho}/>}
+                  </div>
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontSize:15, fontWeight:700, color:COR.texto}}>{r.maquinaCodigo ? r.maquinaCodigo+' · ' : ''}{r.maquinaDescricao}</div>
+                    <div style={{fontSize:12.5, color:COR.cinza, marginTop:1}}>{dataHoraBR(r.criadoEm)} · {r.operador || 'sem nome'}</div>
+                  </div>
+                  <div style={{display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end'}}>
+                    {func
+                      ? <Badge cor={COR.verde} bg={COR.verdeBg}>Funcional</Badge>
+                      : <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>{r.motivoParada || 'Parada'}</Badge>}
+                    {nokCount > 0 && <span style={{fontSize:11.5, color:COR.vermelho, fontWeight:700}}>{nokCount} item(ns) não OK</span>}
+                  </div>
+                  <ChevronDown size={18} color={COR.cinza} style={{transform: aberto?'rotate(180deg)':'none', transition:'transform .15s', flexShrink:0}}/>
+                </div>
+
+                {aberto && (
+                  <div style={{borderTop:`1px solid ${COR.borda}`, padding:'14px 16px', background:'#FAFBFC'}}>
+                    <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(140px,1fr))', gap:8, marginBottom:12, fontSize:13}}>
+                      {func && <div><b>Horímetro:</b> {r.horimetroNA ? 'N/A' : (r.horimetro!=null ? r.horimetro+'h' : '—')}</div>}
+                      <div><b>Obra:</b> {r.obra || '—'}</div>
+                      {r.indisponivelMinutos != null && <div><b>Indisponibilidade:</b> {formatarDuracao(r.indisponivelMinutos)}</div>}
+                    </div>
+                    {(r.checklist || []).filter(c => c.status).length > 0 && (
+                      <div style={{marginBottom:12}}>
+                        <div style={{fontSize:12.5, fontWeight:700, color:COR.cinza, marginBottom:6, textTransform:'uppercase'}}>Checklist</div>
+                        <div style={{display:'flex', flexDirection:'column', gap:5}}>
+                          {r.checklist.filter(c => c.status).map((c, i) => (
+                            <div key={i} style={{display:'flex', alignItems:'center', gap:8, fontSize:13.5}}>
+                              <span style={{fontWeight:700, color: c.status==='ok'?COR.verde:COR.vermelho, fontSize:12, minWidth:58}}>{c.status==='ok'?'OK':'NÃO OK'}</span>
+                              <span style={{color:COR.texto}}>{c.item}</span>
+                              {c.obs && <span style={{color:COR.cinza, fontStyle:'italic'}}>— {c.obs}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {r.observacao && <div style={{fontSize:13.5, marginBottom:12}}><b>Observação:</b> {r.observacao}</div>}
+                    {((r.fotoUrl ? 1 : 0) + (r.fotosExtras||[]).length) > 0 && (
+                      <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:12}}>
+                        {r.fotoUrl && <a href={r.fotoUrl} target="_blank" rel="noopener"><img src={r.fotoUrl} alt="painel" style={{width:70, height:70, objectFit:'cover', borderRadius:8, border:`1px solid ${COR.borda}`}}/></a>}
+                        {(r.fotosExtras||[]).map((u,i) => <a key={i} href={u} target="_blank" rel="noopener"><img src={u} alt={'f'+i} style={{width:70, height:70, objectFit:'cover', borderRadius:8, border:`1px solid ${COR.borda}`}}/></a>)}
+                      </div>
+                    )}
+                    <button onClick={() => gerarPdfRegistro(r, mapaMaquinas[r.maquinaId] || { codigo:r.maquinaCodigo, descricao:r.maquinaDescricao, obra:r.obra, possuiHorimetro:true, tipo:'axial' })} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5}}>
+                      <Download size={16}/> Baixar PDF deste registro
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Modal de exclusão com senha */}
+      {mostrarExcluir && (
+        <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.5)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:20}} onClick={() => !excluindo && setMostrarExcluir(false)}>
+          <div onClick={e => e.stopPropagation()} style={{background:'#fff', width:'100%', maxWidth:420, borderRadius:16, padding:22}}>
+            <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:12}}>
+              <div style={{width:44, height:44, borderRadius:11, background:COR.vermelhoBg, display:'flex', alignItems:'center', justifyContent:'center'}}><Trash2 size={22} color={COR.vermelho}/></div>
+              <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.texto}}>Excluir período</h3>
+            </div>
+            <p style={{fontSize:14, color:COR.cinza, lineHeight:1.5, margin:'0 0 16px'}}>
+              Isso vai apagar <b>{noPeriodo.length} registro(s)</b> de {ini.split('-').reverse().join('/')} a {fim.split('-').reverse().join('/')} e <b>todas as fotos</b> deles. Esta ação não pode ser desfeita.
+            </p>
+            <label style={S.rotulo}>Digite a senha do admin para confirmar</label>
+            <input type="password" value={senha} autoFocus style={{...S.campo, borderColor: erroSenha?COR.vermelho:COR.borda}} onChange={e => { setSenha(e.target.value); setErroSenha(''); }} onKeyDown={e => e.key==='Enter' && confirmarExclusao()}/>
+            {erroSenha && <p style={{color:COR.vermelho, fontSize:13, margin:'8px 0 0', fontWeight:600}}>{erroSenha}</p>}
+            <div style={{display:'flex', gap:10, marginTop:18}}>
+              <button onClick={confirmarExclusao} disabled={excluindo} style={{...S.botaoPrim, flex:1, background:COR.vermelho, opacity:excluindo?.7:1}}>{excluindo ? 'Excluindo…' : 'Excluir definitivamente'}</button>
+              <button onClick={() => { setMostrarExcluir(false); setSenha(''); setErroSenha(''); }} disabled={excluindo} style={S.botaoSec}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============================================================
 // APP RAIZ
 // ============================================================
@@ -1918,6 +2165,9 @@ function App() {
           </div>
         </div>
         <div style={{display:'flex', alignItems:'center', gap:8}}>
+          <button onClick={() => setTela(tela === 'registros' ? 'lista' : 'registros')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <FileText size={16}/> Registros
+          </button>
           <button onClick={() => setTela(tela === 'relatorios' ? 'lista' : 'relatorios')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
             <BarChart3 size={16}/> Relatórios
           </button>
@@ -1951,6 +2201,17 @@ function App() {
           <TelaRelatorios
             registros={registros} maquinas={maquinas}
             onVoltar={() => setTela('lista')}
+          />
+        )}
+        {tela === 'registros' && (
+          <TelaRegistros
+            registros={registros} maquinas={maquinas}
+            onVoltar={() => setTela('lista')}
+            onExcluirPeriodo={async (ini, fim) => {
+              const r = await excluirRegistrosPeriodo(registros, ini, fim);
+              await recarregar();
+              return r;
+            }}
           />
         )}
       </main>
