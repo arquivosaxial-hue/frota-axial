@@ -466,13 +466,15 @@ function caminhoDaFotoUrl(url) {
 }
 
 // Exclui todos os registros de um período + as fotos no Storage
-async function excluirRegistrosPeriodo(registros, ini, fim) {
+async function excluirRegistrosPeriodo(registros, ini, fim, obra) {
   if (!supabaseClient) return { apagados: 0 };
   const iniMs = ini ? new Date(ini + 'T00:00:00').getTime() : -Infinity;
   const fimMs = fim ? new Date(fim + 'T23:59:59').getTime() : Infinity;
   const alvo = registros.filter(r => {
     const t = new Date(r.criadoEm).getTime();
-    return t >= iniMs && t <= fimMs;
+    if (t < iniMs || t > fimMs) return false;
+    if (obra && obra !== 'todas' && r.obra !== obra) return false;
+    return true;
   });
   if (alvo.length === 0) return { apagados: 0 };
 
@@ -756,6 +758,78 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
   }
 
   doc.save(`relatorio_frota_${new Date().toISOString().slice(0,10)}.pdf`);
+}
+
+// Gera um PDF com TODOS os checklists do período (um por seção, detalhado + foto do painel)
+async function gerarPdfTodosRegistros(registrosPeriodo, ini, fim) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210; let y = 0;
+
+  doc.setFillColor(27, 58, 92); doc.rect(0, 0, W, 26, 'F');
+  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text('Checklists do período', 14, 12);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  const periodoTxt = (ini || fim) ? `${ini ? ini.split('-').reverse().join('/') : 'início'} a ${fim ? fim.split('-').reverse().join('/') : 'hoje'}` : 'Todos os registros';
+  doc.text(`Construtora Axial — ${periodoTxt} — ${registrosPeriodo.length} registro(s)`, 14, 19);
+  y = 34;
+
+  const cron = [...registrosPeriodo].sort((a,b) => new Date(b.criadoEm) - new Date(a.criadoEm));
+
+  for (let idx = 0; idx < cron.length; idx++) {
+    const r = cron[idx];
+    if (y > 245) { doc.addPage(); y = 20; }
+
+    // título do registro
+    doc.setDrawColor(220); doc.setLineWidth(0.3); doc.line(14, y, W-14, y); y += 6;
+    doc.setTextColor(27,58,92); doc.setFont('helvetica','bold'); doc.setFontSize(12);
+    doc.text(`${r.maquinaCodigo ? r.maquinaCodigo+' · ' : ''}${r.maquinaDescricao}`, 14, y); y += 6;
+
+    doc.setTextColor(60); doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    doc.text(`${dataHoraBR(r.criadoEm)}`, 14, y);
+    doc.text(`Operador: ${r.operador || '—'}`, 90, y);
+    doc.text(`Obra: ${r.obra || '—'}`, 150, y); y += 5.5;
+
+    const func = r.status === 'funcional';
+    doc.setFont('helvetica','bold');
+    doc.setTextColor(func?22:200, func?120:40, 40);
+    const st = func
+      ? `FUNCIONAL · ${r.horimetroNA ? 'horímetro N/A' : (r.horimetro!=null ? r.horimetro+'h' : 's/ horímetro')}`
+      : `NÃO FUNCIONAL · ${r.motivoParada || ''}`;
+    doc.text(st, 14, y); doc.setTextColor(30); doc.setFont('helvetica','normal'); y += 6;
+    if (r.indisponivelMinutos != null) { doc.setTextColor(140,80,10); doc.text(`Indisponibilidade: ${formatarDuracao(r.indisponivelMinutos)}`, 14, y); doc.setTextColor(30); y += 5.5; }
+
+    // checklist
+    const itens = (r.checklist || []).filter(c => c.status);
+    if (itens.length) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text('Checklist:', 14, y); y += 5;
+      doc.setFont('helvetica','normal');
+      for (const c of itens) {
+        if (y > 280) { doc.addPage(); y = 20; }
+        const ok = c.status === 'ok';
+        doc.setTextColor(ok?22:200, ok?120:40, 40); doc.setFont('helvetica','bold');
+        doc.text(ok ? 'OK' : 'NÃO OK', 16, y);
+        doc.setTextColor(40); doc.setFont('helvetica','normal');
+        doc.text(c.item + (c.obs ? ` — ${c.obs}` : ''), 36, y, { maxWidth: W-50 }); y += 5;
+      }
+    }
+    if (r.observacao) { doc.setFont('helvetica','italic'); doc.setTextColor(90);
+      const ol = doc.splitTextToSize(`Obs: ${r.observacao}`, W-30); doc.text(ol, 14, y); doc.setTextColor(30); doc.setFont('helvetica','normal'); y += ol.length*5; }
+
+    // foto do painel (miniatura)
+    if (r.fotoUrl) {
+      const d = await imagemParaDataURL(r.fotoUrl);
+      if (d) {
+        if (y > 225) { doc.addPage(); y = 20; }
+        try { doc.addImage(d, 'JPEG', 14, y, 50, 38); y += 42; } catch(e) {}
+      }
+    }
+    if ((r.fotosExtras||[]).length) { doc.setTextColor(120); doc.setFontSize(8.5);
+      doc.text(`(+ ${r.fotosExtras.length} foto(s) adicional(is) no sistema)`, 14, y); doc.setTextColor(30); doc.setFontSize(9.5); y += 5; }
+    y += 4;
+  }
+
+  doc.save(`checklists_${new Date().toISOString().slice(0,10)}.pdf`);
 }
 
 // ============================================================
@@ -1753,12 +1827,18 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
   const [senha, setSenha] = useState('');
   const [erroSenha, setErroSenha] = useState('');
   const [excluindo, setExcluindo] = useState(false);
+  const [fObra, setFObra] = useState('todas');
+
+  // obras presentes nos registros
+  const obrasNosRegistros = Array.from(new Set(registros.map(r => r.obra).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
 
   const noPeriodo = registros.filter(r => {
     const t = new Date(r.criadoEm).getTime();
     const a = ini ? new Date(ini+'T00:00:00').getTime() : -Infinity;
     const b = fim ? new Date(fim+'T23:59:59').getTime() : Infinity;
-    return t >= a && t <= b;
+    if (t < a || t > b) return false;
+    if (fObra !== 'todas' && r.obra !== fObra) return false;
+    return true;
   });
 
   const mapaMaquinas = {};
@@ -1769,7 +1849,7 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
     if (senha !== SENHA_ADMIN) { setErroSenha('Senha incorreta.'); return; }
     setExcluindo(true);
     try {
-      const r = await onExcluirPeriodo(ini, fim);
+      const r = await onExcluirPeriodo(ini, fim, fObra);
       setMostrarExcluir(false); setSenha('');
       alert(`${r.apagados} registro(s) excluído(s) e fotos removidas.`);
     } catch (e) {
@@ -1797,7 +1877,21 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
           <label style={S.rotulo}>Até</label>
           <input type="date" value={fim} style={{...S.campo, width:'auto'}} onChange={e => setFim(e.target.value)}/>
         </div>
+        <div>
+          <label style={S.rotulo}>Obra</label>
+          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFObra(e.target.value)}>
+            <option value="todas">Todas as obras</option>
+            {obrasNosRegistros.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
         <span style={{fontSize:13.5, color:COR.cinza, fontWeight:600, alignSelf:'center'}}>{noPeriodo.length} registro(s)</span>
+      </div>
+
+      {/* Ações do período */}
+      <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:18}}>
+        <button onClick={() => gerarPdfTodosRegistros(noPeriodo, ini, fim)} disabled={noPeriodo.length===0} style={{...S.botaoPrim, opacity:noPeriodo.length?1:.5}}>
+          <Download size={18}/> Baixar todos os checklists
+        </button>
         <button onClick={() => setMostrarExcluir(true)} disabled={noPeriodo.length===0} style={{...S.botaoSec, color:COR.vermelho, borderColor:'#FECACA', opacity:noPeriodo.length?1:.5, marginLeft:'auto'}}>
           <Trash2 size={17}/> Excluir período
         </button>
@@ -1882,7 +1976,7 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
               <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.texto}}>Excluir período</h3>
             </div>
             <p style={{fontSize:14, color:COR.cinza, lineHeight:1.5, margin:'0 0 16px'}}>
-              Isso vai apagar <b>{noPeriodo.length} registro(s)</b> de {ini.split('-').reverse().join('/')} a {fim.split('-').reverse().join('/')} e <b>todas as fotos</b> deles. Esta ação não pode ser desfeita.
+              Isso vai apagar <b>{noPeriodo.length} registro(s)</b> de {ini.split('-').reverse().join('/')} a {fim.split('-').reverse().join('/')}{fObra !== 'todas' ? <> da obra <b>{fObra}</b></> : ''} e <b>todas as fotos</b> deles. Esta ação não pode ser desfeita.
             </p>
             <label style={S.rotulo}>Digite a senha do admin para confirmar</label>
             <input type="password" value={senha} autoFocus style={{...S.campo, borderColor: erroSenha?COR.vermelho:COR.borda}} onChange={e => { setSenha(e.target.value); setErroSenha(''); }} onKeyDown={e => e.key==='Enter' && confirmarExclusao()}/>
@@ -2207,8 +2301,8 @@ function App() {
           <TelaRegistros
             registros={registros} maquinas={maquinas}
             onVoltar={() => setTela('lista')}
-            onExcluirPeriodo={async (ini, fim) => {
-              const r = await excluirRegistrosPeriodo(registros, ini, fim);
+            onExcluirPeriodo={async (ini, fim, obra) => {
+              const r = await excluirRegistrosPeriodo(registros, ini, fim, obra);
               await recarregar();
               return r;
             }}
