@@ -132,6 +132,9 @@ const ICON_PATHS = {
   'circle-slash': '<circle cx="12" cy="12" r="10"/><line x1="9" y1="15" x2="15" y2="9"/>',
   'list': '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
   'hash': '<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>',
+  'alert-triangle': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  'clock': '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  'user': '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
 };
 
 function LucideIcon({ name, size = 24, color = 'currentColor', strokeWidth = 2, style, ...rest }) {
@@ -202,6 +205,9 @@ const Power          = (p) => <LucideIcon name="power" {...p} />;
 const CircleSlash    = (p) => <LucideIcon name="circle-slash" {...p} />;
 const List           = (p) => <LucideIcon name="list" {...p} />;
 const Hash           = (p) => <LucideIcon name="hash" {...p} />;
+const AlertTriangle  = (p) => <LucideIcon name="alert-triangle" {...p} />;
+const Clock          = (p) => <LucideIcon name="clock" {...p} />;
+const User           = (p) => <LucideIcon name="user" {...p} />;
 
 // ============================================================
 // CONFIGURAÇÃO / CONSTANTES
@@ -356,6 +362,66 @@ function calcularManutencao(m) {
   if (restante <= 0)         return { cor: COR.vermelho, rotulo: 'Vencida',  restante, vencido: true };
   if (restante <= intervalo * 0.15) return { cor: COR.amarelo, rotulo: 'Próxima', restante, vencido: false };
   return { cor: COR.verde, rotulo: 'Em dia', restante, vencido: false };
+}
+
+// ------------------------------------------------------------
+// REGISTROS DO OPERADOR
+// ------------------------------------------------------------
+const MOTIVOS_PARADA = ['Mecânico', 'Hidráulico', 'Elétrico', 'Pneu', 'Operacional', 'Outro'];
+
+function registroDoBanco(l) {
+  return {
+    id: l.id,
+    maquinaId: l.maquina_id,
+    maquinaCodigo: l.maquina_codigo || '',
+    maquinaDescricao: l.maquina_descricao || '',
+    obra: l.obra || '',
+    operador: l.operador || '',
+    status: l.status,
+    horimetro: l.horimetro != null ? Number(l.horimetro) : null,
+    horimetroNA: l.horimetro_na === true,
+    fotoUrl: l.foto_url || '',
+    motivoParada: l.motivo_parada || '',
+    observacao: l.observacao || '',
+    fimParadaDe: l.fim_parada_de || null,
+    indisponivelMinutos: l.indisponivel_minutos != null ? Number(l.indisponivel_minutos) : null,
+    criadoEm: l.criado_em,
+  };
+}
+
+async function listarRegistros() {
+  if (!supabaseClient) return [];
+  const { data, error } = await supabaseClient
+    .from('registros').select('*').order('criado_em', { ascending: false });
+  if (error) { console.error('listarRegistros', error); return []; }
+  return (data || []).map(registroDoBanco);
+}
+
+// Faz upload da foto do painel e devolve a URL pública
+async function enviarFoto(arquivo) {
+  if (!supabaseClient || !arquivo) return '';
+  const ext = (arquivo.name && arquivo.name.split('.').pop()) || 'jpg';
+  const nome = `painel/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+  const { error } = await supabaseClient.storage.from('fotos').upload(nome, arquivo, { upsert: false });
+  if (error) { console.error('enviarFoto', error); throw error; }
+  const { data } = supabaseClient.storage.from('fotos').getPublicUrl(nome);
+  return data.publicUrl;
+}
+
+// Formata minutos como "Xh Ymin"
+function formatarDuracao(min) {
+  if (min == null) return '—';
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  if (h === 0) return `${m} min`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}min`;
+}
+
+function dataHoraBR(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
 }
 
 // ============================================================
@@ -707,7 +773,7 @@ function TelaMaquinas({ maquinas, obras, onNova, onEditar, onToggleAtiva, onAbri
 // ============================================================
 // LOGIN ADMIN
 // ============================================================
-function LoginAdmin({ onEntrar }) {
+function LoginAdmin({ onEntrar, onVoltar }) {
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState(false);
   function entrar() {
@@ -731,6 +797,284 @@ function LoginAdmin({ onEntrar }) {
         </div>
         {erro && <p style={{color:COR.vermelho, fontSize:13, margin:'0 0 12px', fontWeight:600}}>Senha incorreta.</p>}
         <button onClick={entrar} style={{...S.botaoPrim, width:'100%'}}>Entrar</button>
+        {onVoltar && <button onClick={onVoltar} style={{...S.botaoSec, width:'100%', marginTop:10, border:'none'}}>Voltar</button>}
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// FLUXO DO OPERADOR
+// ============================================================
+
+// --- Tela inicial: escolher Operador ou Administrador ---
+function TelaInicial({ onOperador, onAdmin }) {
+  return (
+    <div style={{minHeight:'100vh', background:`linear-gradient(160deg, ${COR.azul} 0%, #14293f 100%)`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24}}>
+      <div style={{width:72, height:72, borderRadius:20, background:'rgba(255,255,255,.12)', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:18}}>
+        <Factory size={38} color="#fff" />
+      </div>
+      <h1 style={{color:'#fff', fontSize:28, fontWeight:800, margin:'0 0 4px', textAlign:'center'}}>Gestão de Frota</h1>
+      <p style={{color:'rgba(255,255,255,.65)', fontSize:15, margin:'0 0 36px'}}>Construtora Axial</p>
+
+      <div style={{display:'flex', flexDirection:'column', gap:14, width:'100%', maxWidth:360}}>
+        <button onClick={onOperador} style={{display:'flex', alignItems:'center', gap:14, background:'#fff', border:'none', borderRadius:16, padding:'20px 22px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', boxShadow:'0 4px 16px rgba(0,0,0,.15)'}}>
+          <div style={{width:46, height:46, borderRadius:12, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><User size={24} color={COR.azul}/></div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:17, fontWeight:800, color:COR.texto}}>Sou Operador</div>
+            <div style={{fontSize:13, color:COR.cinza, marginTop:2}}>Registrar status da máquina</div>
+          </div>
+          <ChevronRight size={20} color={COR.cinza}/>
+        </button>
+
+        <button onClick={onAdmin} style={{display:'flex', alignItems:'center', gap:14, background:'rgba(255,255,255,.08)', border:'1.5px solid rgba(255,255,255,.2)', borderRadius:16, padding:'20px 22px', cursor:'pointer', fontFamily:'inherit', textAlign:'left'}}>
+          <div style={{width:46, height:46, borderRadius:12, background:'rgba(255,255,255,.12)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><Shield size={24} color="#fff"/></div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:17, fontWeight:800, color:'#fff'}}>Administrador</div>
+            <div style={{fontSize:13, color:'rgba(255,255,255,.6)', marginTop:2}}>Gestão da frota e relatórios</div>
+          </div>
+          <ChevronRight size={20} color="rgba(255,255,255,.6)"/>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// --- Operador: passo 1, escolher a máquina ---
+function OperadorSelecionaMaquina({ maquinas, ultimoStatus, onEscolher, onVoltar }) {
+  const [busca, setBusca] = useState('');
+  const ativas = maquinas.filter(m => m.ativa);
+  const filtradas = ativas.filter(m => {
+    if (!busca.trim()) return true;
+    const q = busca.toLowerCase();
+    return `${m.codigo} ${m.descricao} ${m.obra}`.toLowerCase().includes(q);
+  });
+
+  return (
+    <div style={{maxWidth:560, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Selecione a máquina</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>{ativas.length} disponíveis</p>
+        </div>
+      </div>
+
+      <div style={{position:'relative', marginBottom:16}}>
+        <Search size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+        <input value={busca} placeholder="Buscar máquina…" style={{...S.campo, paddingLeft:42}} onChange={e => setBusca(e.target.value)}/>
+      </div>
+
+      <div style={{display:'flex', flexDirection:'column', gap:10}}>
+        {filtradas.map(m => {
+          const parada = ultimoStatus[m.id] === 'nao_funcional';
+          return (
+            <button key={m.id} onClick={() => onEscolher(m)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${COR.borda}`, borderRadius:14, padding:'15px 16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+              <div style={{width:42, height:42, borderRadius:11, background: parada ? COR.vermelhoBg : '#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                <Factory size={22} color={parada ? COR.vermelho : COR.azul}/>
+              </div>
+              <div style={{flex:1, minWidth:0}}>
+                <div style={{display:'flex', alignItems:'center', gap:7}}>
+                  {m.codigo && <span style={{fontSize:12, fontWeight:800, color:COR.azulCl}}>{m.codigo}</span>}
+                  <span style={{fontSize:15.5, fontWeight:700, color:COR.texto}}>{m.descricao}</span>
+                </div>
+                <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>{m.obra || 'Sem obra'}</div>
+              </div>
+              {parada
+                ? <Badge cor={COR.vermelho} bg={COR.vermelhoBg}><AlertTriangle size={11}/> Parada</Badge>
+                : <ChevronRight size={20} color={COR.cinza}/>}
+            </button>
+          );
+        })}
+        {filtradas.length === 0 && <p style={{textAlign:'center', color:COR.cinza, padding:'30px 0'}}>Nenhuma máquina encontrada.</p>}
+      </div>
+    </div>
+  );
+}
+
+// --- Operador: passo 2, registrar status ---
+function OperadorRegistra({ maquina, paradaAberta, onConfirmar, onVoltar, salvando }) {
+  // paradaAberta = registro de não-funcional em aberto (ou null)
+  const [operador, setOperador] = useState('');
+  const [status, setStatus] = useState(null);     // 'funcional' | 'nao_funcional'
+  const [horimetro, setHorimetro] = useState('');
+  const [na, setNA] = useState(false);
+  const [motivo, setMotivo] = useState('');
+  const [obs, setObs] = useState('');
+  const [foto, setFoto] = useState(null);
+  const [fotoPreview, setFotoPreview] = useState('');
+  const [erro, setErro] = useState('');
+
+  const temHorimetro = maquina.possuiHorimetro;
+  const exigeFoto = status === 'funcional' && temHorimetro && !na;
+
+  function escolherFoto(e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    setFoto(f);
+    setFotoPreview(URL.createObjectURL(f));
+  }
+
+  function validarEConfirmar() {
+    setErro('');
+    if (!operador.trim()) { setErro('Informe seu nome.'); return; }
+    if (!status) { setErro('Selecione o status da máquina.'); return; }
+    if (status === 'funcional') {
+      if (temHorimetro && !na) {
+        if (horimetro === '' || isNaN(Number(horimetro))) { setErro('Informe o horímetro atual (ou marque "Não Aplicável").'); return; }
+        if (!foto) { setErro('A foto do painel é obrigatória para validar o horímetro.'); return; }
+      }
+    } else { // nao_funcional
+      if (!motivo) { setErro('Selecione o motivo da parada.'); return; }
+    }
+    onConfirmar({
+      operador: operador.trim(),
+      status,
+      horimetro: (status === 'funcional' && temHorimetro && !na) ? Number(horimetro) : null,
+      horimetroNA: status === 'funcional' && temHorimetro ? na : false,
+      motivo: status === 'nao_funcional' ? motivo : '',
+      observacao: obs.trim(),
+      foto,
+    });
+  }
+
+  return (
+    <div style={{maxWidth:560, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:20, fontWeight:800, color:COR.azul}}>{maquina.codigo ? maquina.codigo + ' · ' : ''}{maquina.descricao}</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>{maquina.obra || 'Sem obra'}</p>
+        </div>
+      </div>
+
+      {/* Aviso de parada em aberto */}
+      {paradaAberta && (
+        <div style={{background:COR.vermelhoBg, border:`1px solid #FECACA`, borderRadius:12, padding:'12px 14px', marginBottom:16, display:'flex', gap:10}}>
+          <AlertTriangle size={18} color={COR.vermelho} style={{flexShrink:0, marginTop:1}}/>
+          <div style={{fontSize:13.5, color:'#991B1B'}}>
+            Esta máquina está <b>parada</b> desde {dataHoraBR(paradaAberta.criadoEm)} ({paradaAberta.motivoParada}).
+            Ao registrar como <b>Funcional</b>, o sistema calcula o tempo de indisponibilidade.
+          </div>
+        </div>
+      )}
+
+      <div style={{...S.card, display:'flex', flexDirection:'column', gap:18}}>
+        {/* Nome do operador */}
+        <div>
+          <label style={S.rotulo}>Seu nome</label>
+          <div style={{position:'relative'}}>
+            <User size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+            <input value={operador} placeholder="Quem está registrando" style={{...S.campo, paddingLeft:42}} onChange={e => setOperador(e.target.value)}/>
+          </div>
+        </div>
+
+        {/* Status */}
+        <div>
+          <label style={S.rotulo}>Status da máquina</label>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+            <button onClick={() => setStatus('funcional')} style={{padding:'16px 12px', borderRadius:12, border:`2px solid ${status==='funcional'?COR.verde:COR.borda}`, background: status==='funcional'?COR.verdeBg:'#fff', cursor:'pointer', fontFamily:'inherit', display:'flex', flexDirection:'column', alignItems:'center', gap:6}}>
+              <CheckCircle2 size={26} color={status==='funcional'?COR.verde:COR.cinza}/>
+              <span style={{fontSize:15, fontWeight:700, color: status==='funcional'?COR.verde:COR.texto}}>Funcional</span>
+            </button>
+            <button onClick={() => setStatus('nao_funcional')} style={{padding:'16px 12px', borderRadius:12, border:`2px solid ${status==='nao_funcional'?COR.vermelho:COR.borda}`, background: status==='nao_funcional'?COR.vermelhoBg:'#fff', cursor:'pointer', fontFamily:'inherit', display:'flex', flexDirection:'column', alignItems:'center', gap:6}}>
+              <AlertTriangle size={26} color={status==='nao_funcional'?COR.vermelho:COR.cinza}/>
+              <span style={{fontSize:15, fontWeight:700, color: status==='nao_funcional'?COR.vermelho:COR.texto}}>Não Funcional</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Bloco Funcional */}
+        {status === 'funcional' && (
+          <>
+            {temHorimetro ? (
+              <div>
+                <label style={S.rotulo}>Horímetro atual</label>
+                <div style={{position:'relative', opacity: na ? .45 : 1}}>
+                  <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+                  <input type="number" inputMode="numeric" value={horimetro} disabled={na} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => setHorimetro(e.target.value)}/>
+                  <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>h</span>
+                </div>
+                <label style={{display:'flex', alignItems:'center', gap:8, marginTop:10, cursor:'pointer', fontSize:14, color:COR.cinza, fontWeight:600}}>
+                  <input type="checkbox" checked={na} onChange={e => { setNA(e.target.checked); if (e.target.checked) { setHorimetro(''); setFoto(null); setFotoPreview(''); } }} style={{width:17, height:17}}/>
+                  Não Aplicável (máquina sem horímetro)
+                </label>
+              </div>
+            ) : (
+              <div style={{background:'#F3F4F6', borderRadius:10, padding:'10px 13px', fontSize:13.5, color:COR.cinza}}>
+                Esta máquina está cadastrada <b>sem horímetro</b> — não é necessário informar leitura nem foto.
+              </div>
+            )}
+
+            {/* Foto do painel (obrigatória se tem horímetro e não é NA) */}
+            {exigeFoto && (
+              <div>
+                <label style={S.rotulo}>Foto do painel <span style={{color:COR.vermelho}}>*</span></label>
+                {fotoPreview ? (
+                  <div style={{position:'relative', borderRadius:12, overflow:'hidden', border:`1px solid ${COR.borda}`}}>
+                    <img src={fotoPreview} alt="painel" style={{width:'100%', maxHeight:240, objectFit:'cover', display:'block'}}/>
+                    <button onClick={() => { setFoto(null); setFotoPreview(''); }} style={{position:'absolute', top:8, right:8, background:'rgba(0,0,0,.6)', color:'#fff', border:'none', borderRadius:8, padding:'6px 10px', fontSize:12.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:5}}><X size={14}/> Trocar</button>
+                  </div>
+                ) : (
+                  <label style={{display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:8, border:`2px dashed ${COR.borda}`, borderRadius:12, padding:'28px 16px', cursor:'pointer', color:COR.cinza}}>
+                    <Camera size={30} color={COR.azulCl}/>
+                    <span style={{fontSize:14, fontWeight:600}}>Tirar / escolher foto</span>
+                    <input type="file" accept="image/*" capture="environment" onChange={escolherFoto} style={{display:'none'}}/>
+                  </label>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Bloco Não Funcional */}
+        {status === 'nao_funcional' && (
+          <div>
+            <label style={S.rotulo}>Motivo da parada</label>
+            <div style={{display:'flex', flexWrap:'wrap', gap:8}}>
+              {MOTIVOS_PARADA.map(mt => (
+                <button key={mt} onClick={() => setMotivo(mt)} style={{padding:'9px 15px', borderRadius:999, border:`1.5px solid ${motivo===mt?COR.vermelho:COR.borda}`, background: motivo===mt?COR.vermelhoBg:'#fff', color: motivo===mt?COR.vermelho:COR.texto, fontSize:14, fontWeight:600, cursor:'pointer', fontFamily:'inherit'}}>{mt}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Observação (opcional) */}
+        {status && (
+          <div>
+            <label style={S.rotulo}>Observação (opcional)</label>
+            <textarea value={obs} rows={2} placeholder="Algo a registrar…" style={{...S.campo, resize:'vertical'}} onChange={e => setObs(e.target.value)}/>
+          </div>
+        )}
+
+        {erro && <div style={{color:COR.vermelho, fontSize:13.5, fontWeight:600}}>{erro}</div>}
+
+        <button onClick={validarEConfirmar} disabled={salvando} style={{...S.botaoPrim, opacity: salvando?.7:1}}>
+          {salvando ? 'Enviando…' : <><CheckCircle2 size={18}/> Finalizar registro</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// --- Operador: tela de sucesso ---
+function OperadorSucesso({ info, onNovo, onSair }) {
+  return (
+    <div style={{maxWidth:440, margin:'40px auto 0', textAlign:'center', padding:'0 16px'}}>
+      <div style={{width:80, height:80, borderRadius:'50%', background:COR.verdeBg, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 18px'}}>
+        <CheckCircle2 size={44} color={COR.verde}/>
+      </div>
+      <h2 style={{margin:'0 0 8px', fontSize:23, fontWeight:800, color:COR.texto}}>Registro enviado!</h2>
+      <p style={{margin:'0 0 6px', color:COR.cinza, fontSize:15}}>{info.maquina}</p>
+      {info.indisponivelMinutos != null && (
+        <div style={{background:COR.amareloBg, border:'1px solid #FDE68A', borderRadius:12, padding:'12px 14px', margin:'16px 0', fontSize:14, color:'#92400E', display:'inline-flex', alignItems:'center', gap:8}}>
+          <Clock size={16}/> Tempo de indisponibilidade: <b>{formatarDuracao(info.indisponivelMinutos)}</b>
+        </div>
+      )}
+      <div style={{display:'flex', flexDirection:'column', gap:10, marginTop:22}}>
+        <button onClick={onNovo} style={S.botaoPrim}><Plus size={18}/> Registrar outra máquina</button>
+        <button onClick={onSair} style={S.botaoSec}>Sair</button>
       </div>
     </div>
   );
@@ -740,24 +1084,34 @@ function LoginAdmin({ onEntrar }) {
 // APP RAIZ
 // ============================================================
 function App() {
-  const [logado, setLogado] = useState(false);
+  const [modo, setModo] = useState('inicial');     // 'inicial' | 'operador' | 'admin'
+  const [logado, setLogado] = useState(false);      // login do admin
   const [maquinas, setMaquinas] = useState([]);
   const [obras, setObras] = useState([]);
+  const [registros, setRegistros] = useState([]);
   const [carregando, setCarregando] = useState(true);
-  const [tela, setTela] = useState('lista');      // 'lista' | 'form'
+  const [tela, setTela] = useState('lista');      // admin: 'lista' | 'form'
   const [editando, setEditando] = useState(null);  // máquina em edição
   const [showObras, setShowObras] = useState(false);
   const [toast, setToast] = useState('');
 
+  // Fluxo operador: 'maquina' (escolhe) | 'registra' | 'sucesso'
+  const [opPasso, setOpPasso] = useState('maquina');
+  const [opMaquina, setOpMaquina] = useState(null);
+  const [opSalvando, setOpSalvando] = useState(false);
+  const [opResultado, setOpResultado] = useState(null);
+
   function aviso(msg) { setToast(msg); setTimeout(() => setToast(''), 2600); }
 
   async function recarregar() {
-    const [ms, os] = await Promise.all([listarMaquinas(), listarObras()]);
-    setMaquinas(ms); setObras(os); setCarregando(false);
+    const [ms, os, rs] = await Promise.all([listarMaquinas(), listarObras(), listarRegistros()]);
+    setMaquinas(ms); setObras(os); setRegistros(rs); setCarregando(false);
   }
 
+  // Carrega dados quando entra em operador ou admin
+  const ativo = modo === 'operador' || (modo === 'admin' && logado);
   useEffect(() => {
-    if (!logado) return;
+    if (!ativo) return;
     let canal;
     (async () => {
       setCarregando(true);
@@ -767,11 +1121,22 @@ function App() {
         canal = supabaseClient.channel('frota')
           .on('postgres_changes', { event:'*', schema:'public', table:'maquinas' }, recarregar)
           .on('postgres_changes', { event:'*', schema:'public', table:'obras' }, recarregar)
+          .on('postgres_changes', { event:'*', schema:'public', table:'registros' }, recarregar)
           .subscribe();
       }
     })();
     return () => { if (canal) supabaseClient.removeChannel(canal); };
-  }, [logado]);
+  }, [ativo]);
+
+  // Último status de cada máquina (a partir dos registros, já ordenados desc)
+  const ultimoStatus = {};
+  const ultimoRegistroNaoFunc = {}; // máquina -> registro de parada em aberto
+  for (const r of registros) {
+    if (ultimoStatus[r.maquinaId] === undefined) {
+      ultimoStatus[r.maquinaId] = r.status;
+      if (r.status === 'nao_funcional') ultimoRegistroNaoFunc[r.maquinaId] = r;
+    }
+  }
 
   // --- CRUD máquinas ---
   async function salvarMaquina(dados) {
@@ -792,6 +1157,75 @@ function App() {
     await supabaseClient.from('maquinas').update({ ativa: !m.ativa }).eq('id', m.id);
     aviso(m.ativa ? 'Máquina inativada.' : 'Máquina reativada.');
     recarregar();
+  }
+
+  // --- Registro do operador ---
+  async function salvarRegistro(dados) {
+    if (!supabaseClient || !opMaquina) return;
+    setOpSalvando(true);
+    try {
+      // 1) upload da foto, se houver
+      let fotoUrl = '';
+      if (dados.foto) {
+        fotoUrl = await enviarFoto(dados.foto);
+      }
+
+      // 2) se está voltando a funcional e havia parada em aberto, calcula indisponibilidade
+      const paradaAberta = ultimoRegistroNaoFunc[opMaquina.id] || null;
+      let indisponivelMin = null;
+      let fimParadaDe = null;
+      if (dados.status === 'funcional' && paradaAberta) {
+        const ini = new Date(paradaAberta.criadoEm).getTime();
+        const fim = Date.now();
+        indisponivelMin = Math.max(0, Math.round((fim - ini) / 60000));
+        fimParadaDe = paradaAberta.id;
+      }
+
+      // 3) monta e insere o registro
+      const linha = {
+        maquina_id: opMaquina.id,
+        maquina_codigo: opMaquina.codigo,
+        maquina_descricao: opMaquina.descricao,
+        obra: opMaquina.obra,
+        operador: dados.operador,
+        status: dados.status,
+        horimetro: dados.horimetro,
+        horimetro_na: dados.horimetroNA,
+        foto_url: fotoUrl,
+        motivo_parada: dados.motivo,
+        observacao: dados.observacao,
+        fim_parada_de: fimParadaDe,
+        indisponivel_minutos: indisponivelMin,
+      };
+      const { error } = await supabaseClient.from('registros').insert(linha);
+      if (error) throw error;
+
+      // 4) atualiza a máquina: horímetro atual + status atual
+      const upd = { status_atual: dados.status };
+      if (dados.status === 'funcional' && dados.horimetro != null) {
+        upd.horimetro_atual = dados.horimetro;
+      }
+      await supabaseClient.from('maquinas').update(upd).eq('id', opMaquina.id);
+
+      setOpResultado({
+        maquina: `${opMaquina.codigo ? opMaquina.codigo + ' · ' : ''}${opMaquina.descricao}`,
+        indisponivelMinutos: indisponivelMin,
+      });
+      setOpPasso('sucesso');
+      recarregar();
+    } catch (e) {
+      console.error('salvarRegistro', e);
+      alert('Não foi possível enviar o registro. Verifique a conexão e tente novamente.\n\n' + (e.message || ''));
+    } finally {
+      setOpSalvando(false);
+    }
+  }
+
+  function reiniciarOperador() {
+    setOpMaquina(null); setOpResultado(null); setOpPasso('maquina');
+  }
+  function sairParaInicio() {
+    reiniciarOperador(); setModo('inicial');
   }
 
   // --- CRUD obras ---
@@ -816,7 +1250,52 @@ function App() {
     recarregar();
   }
 
-  if (!logado) return <LoginAdmin onEntrar={() => setLogado(true)} />;
+  // ---------- MODO INICIAL ----------
+  if (modo === 'inicial') {
+    return <TelaInicial onOperador={() => { reiniciarOperador(); setModo('operador'); }} onAdmin={() => setModo('admin')} />;
+  }
+
+  // ---------- MODO OPERADOR ----------
+  if (modo === 'operador') {
+    return (
+      <div style={{minHeight:'100vh', background:COR.bg}}>
+        <header style={{background:COR.azul, color:'#fff', padding:'14px 20px', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+          <div style={{display:'flex', alignItems:'center', gap:10}}>
+            <div style={{width:34, height:34, borderRadius:9, background:'rgba(255,255,255,.15)', display:'flex', alignItems:'center', justifyContent:'center'}}><User size={20} color="#fff"/></div>
+            <div>
+              <div style={{fontWeight:800, fontSize:16, lineHeight:1}}>Registro de Máquina</div>
+              <div style={{fontSize:11.5, opacity:.7}}>Operador</div>
+            </div>
+          </div>
+          <button onClick={sairParaInicio} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}><LogOut size={16}/> Sair</button>
+        </header>
+        <main style={{padding:'24px 16px 60px'}}>
+          {carregando ? (
+            <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando máquinas…</p>
+          ) : opPasso === 'maquina' ? (
+            <OperadorSelecionaMaquina
+              maquinas={maquinas} ultimoStatus={ultimoStatus}
+              onEscolher={(m) => { setOpMaquina(m); setOpPasso('registra'); }}
+              onVoltar={sairParaInicio}
+            />
+          ) : opPasso === 'registra' ? (
+            <OperadorRegistra
+              maquina={opMaquina}
+              paradaAberta={ultimoRegistroNaoFunc[opMaquina.id] || null}
+              salvando={opSalvando}
+              onConfirmar={salvarRegistro}
+              onVoltar={() => { setOpMaquina(null); setOpPasso('maquina'); }}
+            />
+          ) : (
+            <OperadorSucesso info={opResultado} onNovo={reiniciarOperador} onSair={sairParaInicio} />
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  // ---------- MODO ADMIN ----------
+  if (!logado) return <LoginAdmin onEntrar={() => setLogado(true)} onVoltar={() => setModo('inicial')} />;
 
   return (
     <div style={{minHeight:'100vh', background:COR.bg}}>
@@ -831,7 +1310,7 @@ function App() {
             <div style={{fontSize:11.5, opacity:.7}}>Construtora Axial</div>
           </div>
         </div>
-        <button onClick={() => setLogado(false)} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+        <button onClick={() => { setLogado(false); setModo('inicial'); setTela('lista'); }} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
           <LogOut size={16}/> Sair
         </button>
       </header>
