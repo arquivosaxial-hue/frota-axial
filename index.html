@@ -284,6 +284,7 @@ function maquinaDoBanco(l) {
     numeroSerie: l.numero_serie || '',
     obra: l.obra || '',
     tipo: l.tipo || 'axial',
+    unidade: l.unidade || 'horas',
     empresaLocadora: l.empresa_locadora || '',
     possuiHorimetro: l.possui_horimetro !== false,
     horimetroInicial: Number(l.horimetro_inicial) || 0,
@@ -305,6 +306,7 @@ function maquinaParaBanco(m) {
     numero_serie: m.numeroSerie,
     obra: m.obra,
     tipo: m.tipo,
+    unidade: m.unidade || 'horas',
     empresa_locadora: m.empresaLocadora || null,
     possui_horimetro: m.possuiHorimetro,
     horimetro_inicial: m.horimetroInicial,
@@ -365,11 +367,16 @@ function calcularManutencao(m) {
   }
   const desdeUltima = m.horimetroAtual - (m.horimetroUltimaManutencao || 0);
   const intervalo = m.intervaloManutencao || 500;
-  const restante = intervalo - desdeUltima;
+  const restante = Math.round(intervalo - desdeUltima);
   if (restante <= 0)         return { cor: COR.vermelho, rotulo: 'Vencida',  restante, vencido: true };
   if (restante <= intervalo * 0.15) return { cor: COR.amarelo, rotulo: 'Próxima', restante, vencido: false };
   return { cor: COR.verde, rotulo: 'Em dia', restante, vencido: false };
 }
+
+// Rótulos conforme a unidade da máquina (horas/km)
+function unidadeSufixo(m) { return (m && m.unidade === 'km') ? 'km' : 'h'; }
+function unidadeMedidor(m) { return (m && m.unidade === 'km') ? 'Hodômetro' : 'Horímetro'; }
+function unidadeTrabalho(m) { return (m && m.unidade === 'km') ? 'Km rodados' : 'Horas trabalhadas'; }
 
 // ------------------------------------------------------------
 // REGISTROS DO OPERADOR
@@ -563,7 +570,7 @@ async function gerarPdfRegistro(reg, maquina) {
   linha('Data/hora:', dataHoraBR(reg.criadoEm || new Date().toISOString()));
   linha('Status:', reg.status === 'funcional' ? 'FUNCIONAL' : 'NÃO FUNCIONAL');
   if (reg.status === 'funcional') {
-    linha('Horímetro:', reg.horimetroNA ? 'Não aplicável' : (reg.horimetro != null ? reg.horimetro + ' h' : '—'));
+    linha(unidadeMedidor(maquina)+':', reg.horimetroNA ? 'Não aplicável' : (reg.horimetro != null ? reg.horimetro + ' ' + unidadeSufixo(maquina) : '—'));
   } else {
     linha('Motivo da parada:', reg.motivoParada);
   }
@@ -638,14 +645,14 @@ function calcularResumoPeriodo(registros, maquinas, ini, fim) {
     porMaquina[m.id] = {
       maquina: m,
       diasFunc: new Set(), diasParado: new Set(),
-      horasTrabalhadas: 0, paradoMin: 0,
+      horasTrabalhadas: 0, paradoMin: 0, trabalhoPorDia: {},
       motivos: {}, registros: [],
     };
   }
 
-  // ordena cronológico p/ calcular horas trabalhadas (diferença de horímetro)
+  // ordena cronológico p/ calcular trabalho (diferença entre leituras consecutivas)
   const cron = [...noPeriodo].sort((a,b) => new Date(a.criadoEm) - new Date(b.criadoEm));
-  const ultimoHorimetro = {};
+  const leituraAnterior = {}; // maquinaId -> { valor, dia }
   for (const r of cron) {
     const bucket = porMaquina[r.maquinaId];
     if (!bucket) continue;
@@ -654,11 +661,16 @@ function calcularResumoPeriodo(registros, maquinas, ini, fim) {
     if (r.status === 'funcional') {
       bucket.diasFunc.add(dia);
       if (r.horimetro != null) {
-        if (ultimoHorimetro[r.maquinaId] != null) {
-          const dif = r.horimetro - ultimoHorimetro[r.maquinaId];
-          if (dif > 0 && dif < 100) bucket.horasTrabalhadas += dif; // ignora saltos absurdos
+        const ant = leituraAnterior[r.maquinaId];
+        if (ant != null) {
+          const dif = r.horimetro - ant.valor;
+          // como o check é no início do dia, o trabalho pertence ao dia da leitura ANTERIOR
+          if (dif > 0) {
+            bucket.horasTrabalhadas += dif;
+            bucket.trabalhoPorDia[ant.dia] = (bucket.trabalhoPorDia[ant.dia] || 0) + dif;
+          }
         }
-        ultimoHorimetro[r.maquinaId] = r.horimetro;
+        leituraAnterior[r.maquinaId] = { valor: r.horimetro, dia };
       }
     } else {
       bucket.diasParado.add(dia);
@@ -686,6 +698,29 @@ function calcularResumoPeriodo(registros, maquinas, ini, fim) {
     });
 }
 
+// Lista, por máquina ativa, os dias do período SEM nenhum registro
+function diasSemRegistro(registros, maquinas, ini, fim) {
+  if (!ini || !fim) return [];
+  const dias = [];
+  const d0 = new Date(ini + 'T00:00:00');
+  const d1 = new Date(fim + 'T00:00:00');
+  for (let d = new Date(d0); d <= d1; d.setDate(d.getDate() + 1)) {
+    dias.push(d.toISOString().slice(0,10));
+  }
+  // dias com registro por máquina
+  const comRegistro = {};
+  for (const r of registros) {
+    const dia = new Date(r.criadoEm).toISOString().slice(0,10);
+    if (dia < ini || dia > fim) continue;
+    (comRegistro[r.maquinaId] = comRegistro[r.maquinaId] || new Set()).add(dia);
+  }
+  return maquinas.filter(m => m.ativa).map(m => {
+    const feitos = comRegistro[m.id] || new Set();
+    const faltantes = dias.filter(dia => !feitos.has(dia));
+    return { maquina: m, faltantes, totalDias: dias.length };
+  }).filter(x => x.faltantes.length > 0);
+}
+
 // Gera e baixa o PDF do admin (todos os checklists do período + resumo)
 function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
   const { jsPDF } = window.jspdf;
@@ -705,7 +740,7 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
   doc.text('Resumo por máquina', 14, y); y += 8;
 
   doc.setFontSize(8.5);
-  const head = ['Máquina', 'Dias func.', 'Dias parado', 'Horas trab.', 'Tempo parado', 'Disponib.'];
+  const head = ['Máquina', 'Dias func.', 'Dias parado', 'Trabalho', 'Tempo parado', 'Disponib.'];
   const colX = [14, 78, 100, 124, 146, 178];
   doc.setFont('helvetica', 'bold'); doc.setFillColor(240,242,245); doc.rect(12, y-5, W-24, 7, 'F');
   head.forEach((h,i) => doc.text(h, colX[i], y)); y += 7;
@@ -716,7 +751,7 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
     doc.text(doc.splitTextToSize(nome, 60)[0], colX[0], y);
     doc.text(String(r.diasFuncionando), colX[1], y);
     doc.text(String(r.diasParado), colX[2], y);
-    doc.text(r.maquina.possuiHorimetro ? String(r.horasTrabalhadas)+'h' : '—', colX[3], y);
+    doc.text(r.maquina.possuiHorimetro ? String(r.horasTrabalhadas)+unidadeSufixo(r.maquina) : '—', colX[3], y);
     doc.text(formatarDuracao(r.paradoMin || 0), colX[4], y);
     doc.text(r.disponibilidade != null ? r.disponibilidade+'%' : '—', colX[5], y);
     y += 6.5;
@@ -761,7 +796,9 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
 }
 
 // Gera um PDF com TODOS os checklists do período (um por seção, detalhado + foto do painel)
-async function gerarPdfTodosRegistros(registrosPeriodo, ini, fim) {
+async function gerarPdfTodosRegistros(registrosPeriodo, ini, fim, maquinas) {
+  const mapaM = {};
+  for (const m of (maquinas || [])) mapaM[m.id] = m;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const W = 210; let y = 0;
@@ -794,7 +831,7 @@ async function gerarPdfTodosRegistros(registrosPeriodo, ini, fim) {
     doc.setFont('helvetica','bold');
     doc.setTextColor(func?22:200, func?120:40, 40);
     const st = func
-      ? `FUNCIONAL · ${r.horimetroNA ? 'horímetro N/A' : (r.horimetro!=null ? r.horimetro+'h' : 's/ horímetro')}`
+      ? `FUNCIONAL · ${r.horimetroNA ? 'medidor N/A' : (r.horimetro!=null ? r.horimetro+unidadeSufixo(mapaM[r.maquinaId]) : 's/ medidor')}`
       : `NÃO FUNCIONAL · ${r.motivoParada || ''}`;
     doc.text(st, 14, y); doc.setTextColor(30); doc.setFont('helvetica','normal'); y += 6;
     if (r.indisponivelMinutos != null) { doc.setTextColor(140,80,10); doc.text(`Indisponibilidade: ${formatarDuracao(r.indisponivelMinutos)}`, 14, y); doc.setTextColor(30); y += 5.5; }
@@ -889,7 +926,7 @@ function BadgeManutencao({ maquina }) {
   return (
     <Badge cor={m.cor} bg={bg}>
       <Wrench size={12} /> {m.rotulo}
-      {m.restante != null && m.restante > 0 && <span style={{opacity:.7, fontWeight:600}}>· {m.restante}h</span>}
+      {m.restante != null && m.restante > 0 && <span style={{opacity:.7, fontWeight:600}}>· {m.restante}{unidadeSufixo(maquina)}</span>}
     </Badge>
   );
 }
@@ -901,7 +938,7 @@ function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
   const ed = !!maquina;
   const [f, setF] = useState(maquina || {
     codigo:'', descricao:'', modelo:'', fabricante:'', numeroSerie:'',
-    obra: (obras[0] && obras[0].nome) || '', tipo:'axial', empresaLocadora:'',
+    obra: (obras[0] && obras[0].nome) || '', tipo:'axial', unidade:'horas', empresaLocadora:'',
     possuiHorimetro:true, horimetroInicial:0, horimetroAtual:0,
     intervaloManutencao:500, horimetroUltimaManutencao:0,
     statusAtual:'funcional', ativa:true,
@@ -994,22 +1031,30 @@ function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
 
         <div style={{height:1, background:COR.borda, margin:'2px 0'}} />
 
+        <div>
+          <label style={S.rotulo}>Tipo de medição</label>
+          <div style={{display:'flex', gap:10}}>
+            <button type="button" onClick={() => set('unidade','horas')} style={{flex:1, padding:'11px', borderRadius:10, border:`1.5px solid ${f.unidade!=='km'?COR.azul:COR.borda}`, background: f.unidade!=='km'?'#EFF6FF':'#fff', color: f.unidade!=='km'?COR.azul:COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>Horímetro (horas)</button>
+            <button type="button" onClick={() => set('unidade','km')} style={{flex:1, padding:'11px', borderRadius:10, border:`1.5px solid ${f.unidade==='km'?COR.azul:COR.borda}`, background: f.unidade==='km'?'#EFF6FF':'#fff', color: f.unidade==='km'?COR.azul:COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>Hodômetro (km)</button>
+          </div>
+        </div>
+
         <label style={{display:'flex', alignItems:'center', gap:10, cursor:'pointer', fontSize:15, fontWeight:600, color:COR.texto}}>
           <input type="checkbox" checked={f.possuiHorimetro} onChange={e => set('possuiHorimetro', e.target.checked)} style={{width:18, height:18}} />
-          Possui horímetro
+          Possui {f.unidade==='km' ? 'hodômetro' : 'horímetro'}
         </label>
 
         {f.possuiHorimetro && (
           <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
-            {inputNum('horimetroInicial', 'Horímetro inicial', 'h')}
-            {ed && inputNum('horimetroAtual', 'Horímetro atual', 'h')}
+            {inputNum('horimetroInicial', (f.unidade==='km'?'Hodômetro':'Horímetro')+' inicial', unidadeSufixo(f))}
+            {ed && inputNum('horimetroAtual', (f.unidade==='km'?'Hodômetro':'Horímetro')+' atual', unidadeSufixo(f))}
           </div>
         )}
 
         {f.tipo === 'axial' && (
           <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
-            {inputNum('intervaloManutencao', 'Intervalo de manutenção', 'h')}
-            {inputNum('horimetroUltimaManutencao', 'Horímetro na última revisão', 'h')}
+            {inputNum('intervaloManutencao', 'Intervalo de manutenção', unidadeSufixo(f))}
+            {inputNum('horimetroUltimaManutencao', (f.unidade==='km'?'Hodômetro':'Horímetro')+' na última revisão', unidadeSufixo(f))}
           </div>
         )}
 
@@ -1054,8 +1099,8 @@ function CardMaquina({ m, onEditar, onToggleAtiva }) {
           <div style={{display:'flex', alignItems:'center', gap:14, marginTop:12, flexWrap:'wrap', fontSize:13}}>
             {m.obra && <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.cinza}}><Building size={14}/> {m.obra}</span>}
             {m.possuiHorimetro
-              ? <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.texto, fontWeight:700}}><Gauge size={14}/> {m.horimetroAtual} h</span>
-              : <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.cinza}}><Gauge size={14}/> sem horímetro</span>}
+              ? <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.texto, fontWeight:700}}><Gauge size={14}/> {Math.round(m.horimetroAtual)} {unidadeSufixo(m)}</span>
+              : <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.cinza}}><Gauge size={14}/> sem {m.unidade==='km'?'hodômetro':'horímetro'}</span>}
             {m.tipo === 'axial' && <BadgeManutencao maquina={m} />}
           </div>
 
@@ -1490,20 +1535,20 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
           <>
             {temHorimetro ? (
               <div>
-                <label style={S.rotulo}>Horímetro atual</label>
+                <label style={S.rotulo}>{unidadeMedidor(maquina)} atual</label>
                 <div style={{position:'relative', opacity: na ? .45 : 1}}>
                   <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
                   <input type="number" inputMode="numeric" value={horimetro} disabled={na} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => setHorimetro(e.target.value)}/>
-                  <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>h</span>
+                  <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{unidadeSufixo(maquina)}</span>
                 </div>
                 <label style={{display:'flex', alignItems:'center', gap:8, marginTop:10, cursor:'pointer', fontSize:14, color:COR.cinza, fontWeight:600}}>
                   <input type="checkbox" checked={na} onChange={e => { setNA(e.target.checked); if (e.target.checked) { setHorimetro(''); setFoto(null); setFotoPreview(''); } }} style={{width:17, height:17}}/>
-                  Não Aplicável (máquina sem horímetro)
+                  Não Aplicável (sem {maquina.unidade==='km'?'hodômetro':'horímetro'})
                 </label>
               </div>
             ) : (
               <div style={{background:'#F3F4F6', borderRadius:10, padding:'10px 13px', fontSize:13.5, color:COR.cinza}}>
-                Esta máquina está cadastrada <b>sem horímetro</b> — não é necessário informar leitura nem foto.
+                Esta máquina está cadastrada <b>sem {maquina.unidade==='km'?'hodômetro':'horímetro'}</b> — não é necessário informar leitura nem foto.
               </div>
             )}
 
@@ -1657,9 +1702,26 @@ function TelaRelatorios({ registros, maquinas, onVoltar }) {
   const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
   const [ini, setIni] = useState(mesPassado);
   const [fim, setFim] = useState(hoje);
+  const [fObra, setFObra] = useState('todas');
+  const [fMaquina, setFMaquina] = useState('todas');
 
-  const resumo = calcularResumoPeriodo(registros, maquinas, ini, fim);
-  const registrosPeriodo = registros.filter(r => {
+  const obras = Array.from(new Set(maquinas.map(m => m.obra).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  // máquinas disponíveis no seletor (respeitam a obra escolhida)
+  const maquinasDoFiltro = maquinas.filter(m => fObra === 'todas' || m.obra === fObra);
+
+  // aplica os filtros de obra/máquina ao conjunto de máquinas considerado
+  const maquinasFiltradas = maquinas.filter(m => {
+    if (fObra !== 'todas' && m.obra !== fObra) return false;
+    if (fMaquina !== 'todas' && m.id !== fMaquina) return false;
+    return true;
+  });
+  const idsFiltrados = new Set(maquinasFiltradas.map(m => m.id));
+  const registrosFiltrados = registros.filter(r => idsFiltrados.has(r.maquinaId));
+
+  const resumo = calcularResumoPeriodo(registrosFiltrados, maquinasFiltradas, ini, fim);
+  const faltas = diasSemRegistro(registrosFiltrados, maquinasFiltradas, ini, fim);
+  const totalAtivas = maquinas.filter(m => m.ativa).length;
+  const registrosPeriodo = registrosFiltrados.filter(r => {
     const t = new Date(r.criadoEm).getTime();
     const a = ini ? new Date(ini+'T00:00:00').getTime() : -Infinity;
     const b = fim ? new Date(fim+'T23:59:59').getTime() : Infinity;
@@ -1671,6 +1733,7 @@ function TelaRelatorios({ registros, maquinas, onVoltar }) {
       <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
         <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
         <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Relatórios</h2>
+        <span style={{marginLeft:'auto', fontSize:13.5, fontWeight:700, color:COR.azul, background:'#EFF6FF', padding:'6px 14px', borderRadius:999, display:'flex', alignItems:'center', gap:6}}><Factory size={15}/> {totalAtivas} máquinas ativas</span>
       </div>
 
       <div style={{...S.card, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
@@ -1681,6 +1744,20 @@ function TelaRelatorios({ registros, maquinas, onVoltar }) {
         <div>
           <label style={S.rotulo}>Até</label>
           <input type="date" value={fim} style={{...S.campo, width:'auto'}} onChange={e => setFim(e.target.value)}/>
+        </div>
+        <div>
+          <label style={S.rotulo}>Obra</label>
+          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFObra(e.target.value); setFMaquina('todas'); }}>
+            <option value="todas">Todas as obras</option>
+            {obras.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.rotulo}>Máquina</label>
+          <select value={fMaquina} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFMaquina(e.target.value)}>
+            <option value="todas">Todas as máquinas</option>
+            {maquinasDoFiltro.map(m => <option key={m.id} value={m.id}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</option>)}
+          </select>
         </div>
         <button onClick={() => gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim)} disabled={!resumo.length} style={{...S.botaoPrim, opacity: resumo.length?1:.5, marginLeft:'auto'}}>
           <Download size={18}/> Baixar PDF do período
@@ -1710,7 +1787,7 @@ function TelaRelatorios({ registros, maquinas, onVoltar }) {
               <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(110px, 1fr))', gap:10}}>
                 <Metrica rotulo="Dias funcionando" valor={r.diasFuncionando} cor={COR.verde}/>
                 <Metrica rotulo="Dias parado" valor={r.diasParado} cor={COR.vermelho}/>
-                {r.maquina.possuiHorimetro && <Metrica rotulo="Horas trabalhadas" valor={r.horasTrabalhadas + 'h'} cor={COR.azul}/>}
+                {r.maquina.possuiHorimetro && <Metrica rotulo={unidadeTrabalho(r.maquina)} valor={r.horasTrabalhadas + unidadeSufixo(r.maquina)} cor={COR.azul}/>}
                 <Metrica rotulo="Tempo parado" valor={formatarDuracao(r.paradoMin || 0)} cor={COR.amarelo}/>
               </div>
               {Object.keys(r.motivos).length > 0 && (
@@ -1722,8 +1799,32 @@ function TelaRelatorios({ registros, maquinas, onVoltar }) {
           ))}
         </div>
       )}
+
+      {faltas.length > 0 && (
+        <div style={{...S.card, marginTop:18, padding:0, overflow:'hidden'}}>
+          <div style={{display:'flex', alignItems:'center', gap:9, padding:'13px 16px', borderBottom:`1px solid ${COR.borda}`, background:COR.vermelhoBg}}>
+            <AlertTriangle size={18} color={COR.vermelho}/>
+            <span style={{fontSize:15, fontWeight:800, color:'#991B1B'}}>Checks não realizados</span>
+            <span style={{marginLeft:'auto', fontSize:12.5, color:'#991B1B'}}>no período selecionado</span>
+          </div>
+          <div style={{display:'flex', flexDirection:'column'}}>
+            {faltas.map(({ maquina, faltantes, totalDias }) => (
+              <div key={maquina.id} style={{padding:'11px 16px', borderBottom:`1px solid ${COR.bg}`}}>
+                <div style={{display:'flex', justifyContent:'space-between', gap:10, alignItems:'baseline'}}>
+                  <span style={{fontSize:14.5, fontWeight:700, color:COR.texto}}>{maquina.codigo ? maquina.codigo+' · ' : ''}{maquina.descricao}</span>
+                  <span style={{fontSize:12.5, fontWeight:700, color:COR.vermelho, whiteSpace:'nowrap'}}>{faltantes.length} de {totalDias} dias sem check</span>
+                </div>
+                <div style={{fontSize:11.5, color:COR.cinza, marginTop:3}}>
+                  {faltantes.slice(0,10).map(d => d.split('-').reverse().slice(0,2).join('/')).join(', ')}{faltantes.length > 10 ? '…' : ''}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <p style={{fontSize:12, color:COR.cinza, marginTop:16, lineHeight:1.5}}>
-        Os números refletem os dias em que houve registro do operador. Dias sem nenhum registro não entram na conta de funcionando nem parado.
+        Os números refletem os dias em que houve registro do operador. Como o check é feito no início do dia, o trabalho entre duas leituras é creditado no dia anterior. Dias sem nenhum registro não entram na conta de funcionando nem parado.
       </p>
     </div>
   );
@@ -1812,11 +1913,11 @@ function CardRevisao({ maquinas, compacto }) {
           <div key={m.id} style={{display:'flex', alignItems:'center', gap:10, padding:'11px 16px', borderBottom:`1px solid ${COR.bg}`}}>
             <div style={{flex:1, minWidth:0}}>
               <div style={{fontSize:14.5, fontWeight:700, color:COR.texto}}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</div>
-              {!compacto && <div style={{fontSize:12, color:COR.cinza, marginTop:1}}>{m.obra || 'Sem obra'} · {m.horimetroAtual}h</div>}
+              {!compacto && <div style={{fontSize:12, color:COR.cinza, marginTop:1}}>{m.obra || 'Sem obra'} · {Math.round(m.horimetroAtual)}{unidadeSufixo(m)}</div>}
             </div>
             {mn.vencido
               ? <Badge cor={COR.vermelho} bg={COR.vermelhoBg}><AlertTriangle size={11}/> Vencida</Badge>
-              : <Badge cor={COR.amarelo} bg={COR.amareloBg}><Clock size={11}/> Faltam {mn.restante}h</Badge>}
+              : <Badge cor={COR.amarelo} bg={COR.amareloBg}><Clock size={11}/> Faltam {mn.restante}{unidadeSufixo(m)}</Badge>}
           </div>
         ))}
       </div>
@@ -1899,7 +2000,7 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
 
       {/* Ações do período */}
       <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:18}}>
-        <button onClick={() => gerarPdfTodosRegistros(noPeriodo, ini, fim)} disabled={noPeriodo.length===0} style={{...S.botaoPrim, opacity:noPeriodo.length?1:.5}}>
+        <button onClick={() => gerarPdfTodosRegistros(noPeriodo, ini, fim, maquinas)} disabled={noPeriodo.length===0} style={{...S.botaoPrim, opacity:noPeriodo.length?1:.5}}>
           <Download size={18}/> Baixar todos os checklists
         </button>
         <button onClick={() => setMostrarExcluir(true)} disabled={noPeriodo.length===0} style={{...S.botaoSec, color:COR.vermelho, borderColor:'#FECACA', opacity:noPeriodo.length?1:.5, marginLeft:'auto'}}>
@@ -1941,7 +2042,7 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
                 {aberto && (
                   <div style={{borderTop:`1px solid ${COR.borda}`, padding:'14px 16px', background:'#FAFBFC'}}>
                     <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(140px,1fr))', gap:8, marginBottom:12, fontSize:13}}>
-                      {func && <div><b>Horímetro:</b> {r.horimetroNA ? 'N/A' : (r.horimetro!=null ? r.horimetro+'h' : '—')}</div>}
+                      {func && <div><b>{unidadeMedidor(mapaMaquinas[r.maquinaId])}:</b> {r.horimetroNA ? 'N/A' : (r.horimetro!=null ? r.horimetro+unidadeSufixo(mapaMaquinas[r.maquinaId]) : '—')}</div>}
                       <div><b>Obra:</b> {r.obra || '—'}</div>
                       {r.indisponivelMinutos != null && <div><b>Indisponibilidade:</b> {formatarDuracao(r.indisponivelMinutos)}</div>}
                     </div>
