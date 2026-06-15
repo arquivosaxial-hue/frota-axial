@@ -1,0 +1,3273 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1B3A5C" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Frota Axial" />
+  <title>Frota Axial — Gestão de Frota</title>
+
+  <!-- React 18 (UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone para compilar JSX no browser -->
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+
+  <!-- Supabase SDK -->
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+  <!-- jsPDF (geração de PDF) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #F9FAFB; }
+    #root { min-height: 100vh; }
+    #boot-loader {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; background: #F9FAFB; z-index: 9999;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #1B3A5C; padding: 20px; text-align: center;
+    }
+    #boot-loader .spinner {
+      width: 44px; height: 44px; border: 4px solid #E5E7EB;
+      border-top-color: #1B3A5C; border-radius: 50%;
+      animation: bootspin 0.9s linear infinite;
+    }
+    @keyframes bootspin { to { transform: rotate(360deg); } }
+    .boot-hide { display: none !important; }
+    #error-overlay {
+      display: none;
+      position: fixed; inset: 0; background: #FEF2F2; z-index: 10000;
+      padding: 20px; overflow: auto; font-family: monospace; font-size: 13px;
+      color: #991B1B; white-space: pre-wrap; word-break: break-word;
+    }
+    #error-overlay h2 { color: #7F1D1D; margin-top: 0; font-family: 'Inter', sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="boot-loader">
+    <div class="spinner"></div>
+    <div style="font-weight:600;font-size:14px;">Carregando Frota Axial…</div>
+    <div style="font-size:11px;opacity:0.6;max-width:300px;">A primeira carga pode levar alguns segundos enquanto o JSX é compilado.</div>
+  </div>
+  <div id="error-overlay">
+    <h2>⚠️ Erro ao carregar o app</h2>
+    <div id="error-message"></div>
+  </div>
+  <div id="root"></div>
+
+  <script>
+    // Captura erros globais e exibe na tela (útil pra debug em produção)
+    window.addEventListener('error', function(e) {
+      const overlay = document.getElementById('error-overlay');
+      const msg = document.getElementById('error-message');
+      if (overlay && msg) {
+        overlay.style.display = 'block';
+        const errInfo = (e.error && e.error.stack) || e.message || String(e);
+        msg.textContent = errInfo + '\n\nArquivo: ' + (e.filename || '?') + ':' + (e.lineno || '?');
+      }
+      document.getElementById('boot-loader')?.classList.add('boot-hide');
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      const overlay = document.getElementById('error-overlay');
+      const msg = document.getElementById('error-message');
+      if (overlay && msg) {
+        overlay.style.display = 'block';
+        msg.textContent = 'Promise rejeitada: ' + (e.reason && e.reason.stack || e.reason || 'desconhecido');
+      }
+    });
+
+    // Registro do Service Worker (habilita uso offline e instalação)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('sw.js').then(function(reg) {
+          // Detecta nova versão disponível
+          reg.addEventListener('updatefound', function() {
+            const novo = reg.installing;
+            if (!novo) return;
+            novo.addEventListener('statechange', function() {
+              if (novo.state === 'installed' && navigator.serviceWorker.controller) {
+                window.__novaVersaoDisponivel = true;
+                window.dispatchEvent(new Event('sw-update'));
+              }
+            });
+          });
+        }).catch(function(err) { console.warn('SW falhou:', err); });
+      });
+    }
+  </script>
+
+  <script type="text/babel" data-presets="react">
+// Esconde o loader assim que o Babel começou a executar este script
+document.getElementById('boot-loader')?.classList.add('boot-hide');
+
+// React vem do CDN (UMD) - disponível como `React` global
+const { useState, useRef, useEffect } = React;
+
+// ============================================================
+// ÍCONES INLINE - paths SVG do Lucide embutidos no arquivo
+// para garantir funcionamento sem depender de pacote externo
+// ============================================================
+const ICON_PATHS = {
+  'alert-circle': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+  'calendar': '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+  'camera': '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
+  'check': '<polyline points="20 6 9 17 4 12"/>',
+  'check-circle-2': '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+  'chevron-left': '<polyline points="15 18 9 12 15 6"/>',
+  'chevron-right': '<polyline points="9 18 15 12 9 6"/>',
+  'clipboard-check': '<rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/>',
+  'download': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
+  'filter': '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+  'fuel': '<line x1="3" y1="22" x2="15" y2="22"/><line x1="4" y1="9" x2="14" y2="9"/><path d="M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18"/><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2a2 2 0 0 0 2-2V9.83a2 2 0 0 0-.59-1.42L18 5"/>',
+  'history': '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+  'home': '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+  'map-pin': '<path d="M20 10c0 7-8 12-8 12s-8-5-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
+  'minus': '<line x1="5" y1="12" x2="19" y2="12"/>',
+  'pen-line': '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  'plus': '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  'qr-code': '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3"/><path d="M14 19h3"/><path d="M19 14v7"/>',
+  'rotate-ccw': '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  'search': '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  'send': '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  'trash-2': '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
+  'truck': '<path d="M10 17h4V5H2v12h3"/><path d="M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L19 9h-5v8h1"/><circle cx="7.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+  'users': '<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  'wrench': '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  'x': '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  'shield': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  'eye': '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  'lock': '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  'log-out': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  'edit': '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
+  'save': '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  'plus-circle': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>',
+  'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
+  'arrow-left': '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+  'gauge': '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  'building': '<rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/><path d="M16 14h.01"/><path d="M8 10h.01"/><path d="M8 14h.01"/>',
+  'factory': '<path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M17 18h1"/><path d="M12 18h1"/><path d="M7 18h1"/>',
+  'power': '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
+  'circle-slash': '<circle cx="12" cy="12" r="10"/><line x1="9" y1="15" x2="15" y2="9"/>',
+  'list': '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+  'hash': '<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>',
+  'alert-triangle': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  'clock': '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  'user': '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  'bar-chart-3': '<path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8"/><rect x="12" y="6" width="3" height="12"/><rect x="17" y="13" width="3" height="5"/>',
+};
+
+function LucideIcon({ name, size = 24, color = 'currentColor', strokeWidth = 2, style, ...rest }) {
+  const paths = ICON_PATHS[name];
+  if (!paths) {
+    console.warn('Ícone não encontrado:', name);
+    return null;
+  }
+  return React.createElement('svg', {
+    xmlns: 'http://www.w3.org/2000/svg',
+    width: size,
+    height: size,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: color,
+    strokeWidth: strokeWidth,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    style,
+    dangerouslySetInnerHTML: { __html: paths },
+    ...rest,
+  });
+}
+
+// Wrappers com mesmo nome do lucide-react, pra não precisar refatorar
+// nenhuma chamada existente no código do app abaixo
+const AlertCircle    = (p) => <LucideIcon name="alert-circle" {...p} />;
+const Calendar       = (p) => <LucideIcon name="calendar" {...p} />;
+const Camera         = (p) => <LucideIcon name="camera" {...p} />;
+const Check          = (p) => <LucideIcon name="check" {...p} />;
+const CheckCircle2   = (p) => <LucideIcon name="check-circle-2" {...p} />;
+const ChevronLeft    = (p) => <LucideIcon name="chevron-left" {...p} />;
+const ChevronRight   = (p) => <LucideIcon name="chevron-right" {...p} />;
+const ClipboardCheck = (p) => <LucideIcon name="clipboard-check" {...p} />;
+const Download       = (p) => <LucideIcon name="download" {...p} />;
+const FileText       = (p) => <LucideIcon name="file-text" {...p} />;
+const Filter         = (p) => <LucideIcon name="filter" {...p} />;
+const Fuel           = (p) => <LucideIcon name="fuel" {...p} />;
+const History        = (p) => <LucideIcon name="history" {...p} />;
+const HomeIcon       = (p) => <LucideIcon name="home" {...p} />;
+const MapPin         = (p) => <LucideIcon name="map-pin" {...p} />;
+const Minus          = (p) => <LucideIcon name="minus" {...p} />;
+const PenLine        = (p) => <LucideIcon name="pen-line" {...p} />;
+const Plus           = (p) => <LucideIcon name="plus" {...p} />;
+const QrCode         = (p) => <LucideIcon name="qr-code" {...p} />;
+const RotateCcw      = (p) => <LucideIcon name="rotate-ccw" {...p} />;
+const Search         = (p) => <LucideIcon name="search" {...p} />;
+const Send           = (p) => <LucideIcon name="send" {...p} />;
+const Trash2         = (p) => <LucideIcon name="trash-2" {...p} />;
+const Truck          = (p) => <LucideIcon name="truck" {...p} />;
+const Users          = (p) => <LucideIcon name="users" {...p} />;
+const Wrench         = (p) => <LucideIcon name="wrench" {...p} />;
+const X              = (p) => <LucideIcon name="x" {...p} />;
+const Shield         = (p) => <LucideIcon name="shield" {...p} />;
+const Eye            = (p) => <LucideIcon name="eye" {...p} />;
+const Lock           = (p) => <LucideIcon name="lock" {...p} />;
+const LogOut         = (p) => <LucideIcon name="log-out" {...p} />;
+const Settings       = (p) => <LucideIcon name="settings" {...p} />;
+const Edit           = (p) => <LucideIcon name="edit" {...p} />;
+const Save           = (p) => <LucideIcon name="save" {...p} />;
+const PlusCircle     = (p) => <LucideIcon name="plus-circle" {...p} />;
+const ChevronDown    = (p) => <LucideIcon name="chevron-down" {...p} />;
+const ArrowLeft      = (p) => <LucideIcon name="arrow-left" {...p} />;
+const Gauge          = (p) => <LucideIcon name="gauge" {...p} />;
+const Building       = (p) => <LucideIcon name="building" {...p} />;
+const Factory        = (p) => <LucideIcon name="factory" {...p} />;
+const Power          = (p) => <LucideIcon name="power" {...p} />;
+const CircleSlash    = (p) => <LucideIcon name="circle-slash" {...p} />;
+const List           = (p) => <LucideIcon name="list" {...p} />;
+const Hash           = (p) => <LucideIcon name="hash" {...p} />;
+const AlertTriangle  = (p) => <LucideIcon name="alert-triangle" {...p} />;
+const Clock          = (p) => <LucideIcon name="clock" {...p} />;
+const User           = (p) => <LucideIcon name="user" {...p} />;
+const BarChart3      = (p) => <LucideIcon name="bar-chart-3" {...p} />;
+
+// ============================================================
+// CONFIGURAÇÃO / CONSTANTES
+// ============================================================
+const SENHA_ADMIN = 'axial@2026';
+const SENHA_VALIDADOR = 'valida26';
+
+const SUPABASE_URL = 'https://aqztghqxwatxgaouulvh.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_pgXyiVx2Z0cnl7-cxyOgTA_Rg3KaqOY';
+const USAR_MOCKS   = false;
+
+const supabaseClient = (typeof window !== 'undefined' && window.supabase)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+  : null;
+
+// ============================================================
+// FILA OFFLINE (IndexedDB)
+// Guarda registros feitos sem internet (com as fotos como blobs)
+// e envia ao Supabase quando a conexão volta.
+// ============================================================
+const DB_NOME = 'frota-axial-offline';
+const DB_STORE = 'fila';
+
+function abrirDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NOME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) {
+        db.createObjectStore(DB_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function filaAdicionar(item) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).put(item);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function filaListar() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const req = tx.objectStore(DB_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function filaRemover(id) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).delete(id);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function filaContar() {
+  try { const itens = await filaListar(); return itens.length; }
+  catch (e) { return 0; }
+}
+
+// Envia um item da fila ao Supabase (registro + upload das fotos guardadas)
+async function enviarItemFila(item) {
+  if (!supabaseClient) throw new Error('sem cliente');
+  // 1) sobe a foto do painel (blob guardado)
+  let fotoUrl = '';
+  if (item.fotoBlob) {
+    fotoUrl = await enviarFotoBlob(item.fotoBlob);
+  }
+  // 2) sobe as fotos extras (blobs)
+  const fotosExtrasUrls = [];
+  for (const blob of (item.fotosExtrasBlobs || [])) {
+    try { const u = await enviarFotoBlob(blob); if (u) fotosExtrasUrls.push(u); }
+    catch (e) { console.error('extra offline', e); }
+  }
+  // 3) recalcula indisponibilidade no momento do envio? Não — usa o que foi calculado offline.
+  const linha = {
+    ...item.linha,
+    foto_url: fotoUrl,
+    fotos_extras: fotosExtrasUrls,
+  };
+  const { error } = await supabaseClient.from('registros').insert(linha);
+  if (error) throw error;
+  // 4) atualiza a máquina (status/horímetro)
+  if (item.maquinaUpdate && item.maquinaId) {
+    await supabaseClient.from('maquinas').update(item.maquinaUpdate).eq('id', item.maquinaId);
+  }
+}
+
+// Tenta enviar toda a fila. Retorna { enviados, restantes }.
+let __sincronizando = false;
+async function sincronizarFila() {
+  if (__sincronizando || !navigator.onLine || !supabaseClient) {
+    return { enviados: 0, restantes: await filaContar() };
+  }
+  __sincronizando = true;
+  let enviados = 0;
+  try {
+    const itens = await filaListar();
+    // ordena por data de criação para manter a ordem dos registros
+    itens.sort((a, b) => new Date(a.linha.criado_em || 0) - new Date(b.linha.criado_em || 0));
+    for (const item of itens) {
+      try { await enviarItemFila(item); await filaRemover(item.id); enviados++; }
+      catch (e) { console.error('falha ao sincronizar item', e); break; } // para na 1ª falha (provável queda de rede)
+    }
+  } finally { __sincronizando = false; }
+  const restantes = await filaContar();
+  window.dispatchEvent(new CustomEvent('fila-mudou', { detail: { restantes } }));
+  return { enviados, restantes };
+}
+
+// Paleta (mantém o azul institucional da base)
+const COR = {
+  azul:    '#1B3A5C',
+  azulCl:  '#2C5A8A',
+  bg:      '#F4F6F9',
+  card:    '#FFFFFF',
+  borda:   '#E5E7EB',
+  texto:   '#1F2937',
+  cinza:   '#6B7280',
+  verde:   '#16A34A',
+  verdeBg: '#ECFDF5',
+  amarelo: '#D97706',
+  amareloBg:'#FFFBEB',
+  vermelho:'#DC2626',
+  vermelhoBg:'#FEF2F2',
+};
+
+const TIPOS_MAQUINA = [
+  { valor: 'axial',     rotulo: 'Axial (própria)' },
+  { valor: 'prestador', rotulo: 'Prestador de Serviço' },
+];
+
+// ------------------------------------------------------------
+// DADOS-SEMENTE (as 8 máquinas reais da planilha)
+// Usados só na primeira execução, se a tabela estiver vazia.
+// ------------------------------------------------------------
+const MAQUINAS_SEMENTE = [
+  { codigo:'RC-01',  descricao:'Rolo Compactador HAMM',     modelo:'', fabricante:'HAMM',        numeroSerie:'',                  obra:'Galpão Seropédica',      tipo:'axial', possuiHorimetro:true, horimetroInicial:0,    intervaloManutencao:500 },
+  { codigo:'RT-01',  descricao:'Retro John Deere 310L',     modelo:'310L', fabricante:'John Deere', numeroSerie:'1BZ310LAAMD005786', obra:'SEIOP Obra Barra Piraí', tipo:'axial', possuiHorimetro:true, horimetroInicial:4575, intervaloManutencao:500 },
+  { codigo:'AC-01',  descricao:'Acabadora',                 modelo:'', fabricante:'',            numeroSerie:'',                  obra:'Galpão Seropédica',      tipo:'axial', possuiHorimetro:true, horimetroInicial:0,    intervaloManutencao:500 },
+  { codigo:'AB-01',  descricao:'Auto Betoneira',            modelo:'', fabricante:'FIORI',       numeroSerie:'',                  obra:'Galpão Seropédica',      tipo:'axial', possuiHorimetro:true, horimetroInicial:0,    intervaloManutencao:500 },
+  { codigo:'MN-01',  descricao:'Motoniveladora Volvo G710', modelo:'G710', fabricante:'Volvo',   numeroSerie:'5000087',           obra:'SEIOP Obra Barra Piraí', tipo:'axial', possuiHorimetro:true, horimetroInicial:8332, intervaloManutencao:500 },
+  { codigo:'JCB-01', descricao:'Retro JCB',                 modelo:'', fabricante:'JCB',         numeroSerie:'S0R3CXTTVS3579931', obra:'SEIC Obra Mesquita',     tipo:'axial', possuiHorimetro:true, horimetroInicial:5949, intervaloManutencao:500 },
+  { codigo:'JCB-02', descricao:'Retro JCB',                 modelo:'', fabricante:'JCB',         numeroSerie:'S0R3CXTTAS3579932', obra:'SEIC Obra Mesquita',     tipo:'axial', possuiHorimetro:true, horimetroInicial:5902, intervaloManutencao:500 },
+  { codigo:'ESC-01', descricao:'Escavadeira 320D',          modelo:'320D', fabricante:'Caterpillar', numeroSerie:'CAT0320DKLMA00795', obra:'SECID Obra Mesquita', tipo:'axial', possuiHorimetro:true, horimetroInicial:3765, intervaloManutencao:500 },
+];
+
+const OBRAS_SEMENTE = [
+  'Galpão Seropédica',
+  'SEIOP Obra Barra Piraí',
+  'SEIC Obra Mesquita',
+  'SECID Obra Mesquita',
+];
+
+// ============================================================
+// HELPERS DE BANCO
+// ============================================================
+function maquinaDoBanco(l) {
+  return {
+    id: l.id,
+    codigo: l.codigo || '',
+    descricao: l.descricao || '',
+    modelo: l.modelo || '',
+    fabricante: l.fabricante || '',
+    numeroSerie: l.numero_serie || '',
+    obra: l.obra || '',
+    tipo: l.tipo || 'axial',
+    unidade: l.unidade || 'horas',
+    empresaLocadora: l.empresa_locadora || '',
+    especificacoes: (l.especificacoes && typeof l.especificacoes === 'object') ? l.especificacoes : {},
+    checklistProprio: Array.isArray(l.checklist_itens) ? l.checklist_itens : null,
+    possuiHorimetro: l.possui_horimetro !== false,
+    horimetroInicial: Number(l.horimetro_inicial) || 0,
+    horimetroAtual: Number(l.horimetro_atual) || 0,
+    intervaloManutencao: Number(l.intervalo_manutencao) || 500,
+    horimetroUltimaManutencao: Number(l.horimetro_ultima_manutencao) || 0,
+    statusAtual: l.status_atual || 'funcional',
+    ativa: l.ativa !== false,
+    criadoEm: l.criado_em,
+  };
+}
+
+function maquinaParaBanco(m) {
+  return {
+    codigo: m.codigo,
+    descricao: m.descricao,
+    modelo: m.modelo,
+    fabricante: m.fabricante,
+    numero_serie: m.numeroSerie,
+    obra: m.obra,
+    tipo: m.tipo,
+    unidade: m.unidade || 'horas',
+    empresa_locadora: m.empresaLocadora || null,
+    especificacoes: m.especificacoes || {},
+    checklist_itens: m.checklistProprio && m.checklistProprio.length ? m.checklistProprio : null,
+    possui_horimetro: m.possuiHorimetro,
+    horimetro_inicial: m.horimetroInicial,
+    horimetro_atual: m.horimetroAtual,
+    intervalo_manutencao: m.intervaloManutencao,
+    horimetro_ultima_manutencao: m.horimetroUltimaManutencao,
+    status_atual: m.statusAtual,
+    ativa: m.ativa,
+  };
+}
+
+// Cache local dos dados (para uso offline)
+function cacheSalvar(chave, valor) {
+  try { localStorage.setItem('cache_' + chave, JSON.stringify(valor)); } catch (e) {}
+}
+function cacheLer(chave, padrao) {
+  try { const v = localStorage.getItem('cache_' + chave); return v ? JSON.parse(v) : padrao; }
+  catch (e) { return padrao; }
+}
+
+// Promise com tempo limite — evita ficar "Carregando…" pra sempre offline
+function comTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
+  ]);
+}
+
+async function listarMaquinas() {
+  if (!supabaseClient || !navigator.onLine) return cacheLer('maquinas', []);
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('maquinas').select('*').order('descricao', { ascending: true }), 8000);
+    if (error) throw error;
+    const lista = (data || []).map(maquinaDoBanco);
+    cacheSalvar('maquinas', lista);
+    return lista;
+  } catch (e) { console.warn('listarMaquinas offline/falha', e); return cacheLer('maquinas', []); }
+}
+
+async function listarObras() {
+  if (!supabaseClient || !navigator.onLine) return cacheLer('obras', []);
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('obras').select('*').order('nome', { ascending: true }), 8000);
+    if (error) throw error;
+    const lista = (data || []).map(o => ({ id: o.id, nome: o.nome, ativa: o.ativa !== false }));
+    cacheSalvar('obras', lista);
+    return lista;
+  } catch (e) { console.warn('listarObras offline/falha', e); return cacheLer('obras', []); }
+}
+
+// Semeia tabelas vazias na primeira execução
+async function semearSeVazio() {
+  if (!supabaseClient) return;
+  try {
+    const obras = await listarObras();
+    if (obras.length === 0) {
+      await supabaseClient.from('obras').insert(
+        OBRAS_SEMENTE.map(nome => ({ nome, ativa: true }))
+      );
+    }
+    const maqs = await listarMaquinas();
+    if (maqs.length === 0) {
+      await supabaseClient.from('maquinas').insert(
+        MAQUINAS_SEMENTE.map(m => maquinaParaBanco({
+          ...m,
+          horimetroAtual: m.horimetroInicial,
+          horimetroUltimaManutencao: 0,
+          statusAtual: 'funcional',
+          ativa: true,
+        }))
+      );
+    }
+  } catch (e) { console.error('semear', e); }
+}
+
+// Calcula o estado da manutenção (semáforo) p/ máquinas axial
+// Retorna { cor, rotulo, restante, vencido }
+function calcularManutencao(m) {
+  if (m.tipo !== 'axial' || !m.possuiHorimetro) {
+    return { cor: COR.cinza, rotulo: 'N/A', restante: null, vencido: false };
+  }
+  const desdeUltima = m.horimetroAtual - (m.horimetroUltimaManutencao || 0);
+  const intervalo = m.intervaloManutencao || 500;
+  const restante = Math.round(intervalo - desdeUltima);
+  if (restante <= 0)         return { cor: COR.vermelho, rotulo: 'Vencida',  restante, vencido: true };
+  if (restante <= intervalo * 0.15) return { cor: COR.amarelo, rotulo: 'Próxima', restante, vencido: false };
+  return { cor: COR.verde, rotulo: 'Em dia', restante, vencido: false };
+}
+
+// Rótulos conforme a unidade da máquina (horas/km)
+function unidadeSufixo(m) { return (m && m.unidade === 'km') ? 'km' : 'h'; }
+function unidadeMedidor(m) { return (m && m.unidade === 'km') ? 'Hodômetro' : 'Horímetro'; }
+function unidadeTrabalho(m) { return (m && m.unidade === 'km') ? 'Km rodados' : 'Horas trabalhadas'; }
+// Nome da empresa: locada mostra a empresa locadora; própria mostra "Axial"
+function empresaDaMaquina(m) {
+  if (!m) return '—';
+  if (m.tipo === 'prestador') return m.empresaLocadora || 'Locada (sem empresa)';
+  return 'Axial';
+}
+
+// ------------------------------------------------------------
+// REGISTROS DO OPERADOR
+// ------------------------------------------------------------
+const MOTIVOS_PARADA = ['Mecânico', 'Hidráulico', 'Elétrico', 'Pneu', 'Operacional', 'Outro'];
+
+// Itens padrão do checklist (admin pode editar; semeados na 1ª execução)
+const CHECKLIST_PADRAO = [
+  'Nível de óleo do motor',
+  'Nível de combustível',
+  'Sistema hidráulico (vazamentos)',
+  'Pneus / esteiras',
+  'Freios',
+  'Luzes e sinalização',
+  'Buzina / alarme de ré',
+  'Cinto de segurança',
+  'Espelhos retrovisores',
+  'Limpeza geral / cabine',
+  'Extintor de incêndio',
+  'Vazamentos visíveis no solo',
+];
+
+// Lê/grava a configuração do checklist na tabela configuracoes
+// Resolve o checklist efetivo de uma máquina: o próprio (se customizado), senão o padrão global
+function checklistDaMaquina(maquina, padrao) {
+  if (maquina && Array.isArray(maquina.checklistProprio) && maquina.checklistProprio.length) {
+    return maquina.checklistProprio;
+  }
+  return padrao || CHECKLIST_PADRAO;
+}
+
+async function lerChecklistConfig() {
+  if (!supabaseClient || !navigator.onLine) return cacheLer('checklist', CHECKLIST_PADRAO);
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('configuracoes').select('valor').eq('chave', 'checklist_itens').maybeSingle(), 8000);
+    if (error) throw error;
+    const itens = (data && Array.isArray(data.valor) && data.valor.length) ? data.valor : CHECKLIST_PADRAO;
+    cacheSalvar('checklist', itens);
+    return itens;
+  } catch (e) { console.warn('lerChecklistConfig offline/falha', e); return cacheLer('checklist', CHECKLIST_PADRAO); }
+}
+
+async function salvarChecklistConfig(itens) {
+  if (!supabaseClient) return;
+  await supabaseClient.from('configuracoes')
+    .upsert({ chave: 'checklist_itens', valor: itens, atualizado_em: new Date().toISOString() }, { onConflict: 'chave' });
+}
+
+async function semearChecklistSeVazio() {
+  if (!supabaseClient) return;
+  const { data } = await supabaseClient
+    .from('configuracoes').select('chave').eq('chave', 'checklist_itens').maybeSingle();
+  if (!data) await salvarChecklistConfig(CHECKLIST_PADRAO);
+}
+
+function registroDoBanco(l) {
+  return {
+    id: l.id,
+    maquinaId: l.maquina_id,
+    maquinaCodigo: l.maquina_codigo || '',
+    maquinaDescricao: l.maquina_descricao || '',
+    obra: l.obra || '',
+    operador: l.operador || '',
+    status: l.status,
+    horimetro: l.horimetro != null ? Number(l.horimetro) : null,
+    horimetroNA: l.horimetro_na === true,
+    fotoUrl: l.foto_url || '',
+    motivoParada: l.motivo_parada || '',
+    observacao: l.observacao || '',
+    fimParadaDe: l.fim_parada_de || null,
+    indisponivelMinutos: l.indisponivel_minutos != null ? Number(l.indisponivel_minutos) : null,
+    checklist: Array.isArray(l.checklist) ? l.checklist : [],
+    fotosExtras: Array.isArray(l.fotos_extras) ? l.fotos_extras : [],
+    validacaoStatus: l.validacao_status || 'pendente',
+    validacaoPor: l.validacao_por || '',
+    validacaoEm: l.validacao_em || null,
+    validacaoMotivo: l.validacao_motivo || '',
+    criadoEm: l.criado_em,
+  };
+}
+
+async function listarRegistros() {
+  if (!supabaseClient || !navigator.onLine) return [];
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('registros').select('*').order('criado_em', { ascending: false }), 8000);
+    if (error) throw error;
+    return (data || []).map(registroDoBanco);
+  } catch (e) { console.warn('listarRegistros offline/falha', e); return []; }
+}
+
+// Comprime uma imagem (File/Blob) para no máx ~1280px no maior lado, JPEG qualidade 0.7.
+// Reduz drasticamente o tamanho (ex: 8MB -> ~300KB), mantendo o horímetro legível.
+// Se algo falhar, devolve o arquivo original (nunca trava o registro).
+function comprimirImagem(arquivo, maxLado = 1280, qualidade = 0.7) {
+  return new Promise((resolve) => {
+    try {
+      if (!arquivo || !arquivo.type || !arquivo.type.startsWith('image/')) return resolve(arquivo);
+      const url = URL.createObjectURL(arquivo);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let { width, height } = img;
+          if (width > maxLado || height > maxLado) {
+            if (width >= height) { height = Math.round(height * maxLado / width); width = maxLado; }
+            else { width = Math.round(width * maxLado / height); height = maxLado; }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width; canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          URL.revokeObjectURL(url);
+          canvas.toBlob((blob) => {
+            if (!blob) return resolve(arquivo);
+            // mantém um "name" amigável p/ extensão
+            try { blob.name = (arquivo.name || 'foto').replace(/\.[^.]+$/, '') + '.jpg'; } catch (e) {}
+            resolve(blob);
+          }, 'image/jpeg', qualidade);
+        } catch (e) { URL.revokeObjectURL(url); resolve(arquivo); }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(arquivo); };
+      img.src = url;
+    } catch (e) { resolve(arquivo); }
+  });
+}
+
+// Faz upload da foto do painel e devolve a URL pública
+async function enviarFoto(arquivo) {
+  if (!supabaseClient || !arquivo) return '';
+  const ext = (arquivo.name && arquivo.name.split('.').pop()) || 'jpg';
+  const nome = `painel/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+  const { error } = await supabaseClient.storage.from('fotos').upload(nome, arquivo, { upsert: false });
+  if (error) { console.error('enviarFoto', error); throw error; }
+  const { data } = supabaseClient.storage.from('fotos').getPublicUrl(nome);
+  return data.publicUrl;
+}
+
+// Sobe um Blob (usado na sincronização offline, onde guardamos blobs)
+async function enviarFotoBlob(blob) {
+  if (!supabaseClient || !blob) return '';
+  const tipo = blob.type || 'image/jpeg';
+  const ext = tipo.includes('png') ? 'png' : (tipo.includes('webp') ? 'webp' : 'jpg');
+  const nome = `painel/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+  const { error } = await supabaseClient.storage.from('fotos').upload(nome, blob, { upsert: false, contentType: tipo });
+  if (error) { console.error('enviarFotoBlob', error); throw error; }
+  const { data } = supabaseClient.storage.from('fotos').getPublicUrl(nome);
+  return data.publicUrl;
+}
+
+// Extrai o caminho interno do arquivo a partir da URL pública do Storage
+function caminhoDaFotoUrl(url) {
+  if (!url) return null;
+  const marca = '/object/public/fotos/';
+  const i = url.indexOf(marca);
+  if (i === -1) return null;
+  return decodeURIComponent(url.slice(i + marca.length));
+}
+
+// Exclui todos os registros de um período + as fotos no Storage
+async function excluirRegistrosPeriodo(registros, ini, fim, obra) {
+  if (!supabaseClient) return { apagados: 0 };
+  const iniMs = ini ? new Date(ini + 'T00:00:00').getTime() : -Infinity;
+  const fimMs = fim ? new Date(fim + 'T23:59:59').getTime() : Infinity;
+  const alvo = registros.filter(r => {
+    const t = new Date(r.criadoEm).getTime();
+    if (t < iniMs || t > fimMs) return false;
+    if (obra && obra !== 'todas' && r.obra !== obra) return false;
+    return true;
+  });
+  if (alvo.length === 0) return { apagados: 0 };
+
+  // 1) junta os caminhos de todas as fotos (painel + extras)
+  const caminhos = [];
+  for (const r of alvo) {
+    const p = caminhoDaFotoUrl(r.fotoUrl); if (p) caminhos.push(p);
+    for (const u of (r.fotosExtras || [])) { const c = caminhoDaFotoUrl(u); if (c) caminhos.push(c); }
+  }
+  if (caminhos.length) {
+    try { await supabaseClient.storage.from('fotos').remove(caminhos); }
+    catch (e) { console.error('remover fotos', e); }
+  }
+
+  // 2) apaga os registros (em lotes por id)
+  const ids = alvo.map(r => r.id);
+  const { error } = await supabaseClient.from('registros').delete().in('id', ids);
+  if (error) { console.error('excluir registros', error); throw error; }
+  return { apagados: alvo.length };
+}
+
+// Lista máquinas que precisam de atenção de manutenção (próxima ou vencida)
+function maquinasParaRevisao(maquinas) {
+  return maquinas
+    .filter(m => m.ativa)
+    .map(m => ({ m, mn: calcularManutencao(m) }))
+    .filter(x => x.mn.rotulo === 'Próxima' || x.mn.rotulo === 'Vencida')
+    .sort((a, b) => (a.mn.restante ?? 0) - (b.mn.restante ?? 0));
+}
+
+// Formata minutos como "Xh Ymin"
+function formatarDuracao(min) {
+  if (min == null) return '—';
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  if (h === 0) return `${m} min`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}min`;
+}
+
+function dataHoraBR(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
+// Carrega uma imagem (URL) como dataURL para embutir no PDF. Retorna '' se falhar.
+async function imagemParaDataURL(url) {
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    return await new Promise((res) => {
+      const r = new FileReader();
+      r.onloadend = () => res(r.result);
+      r.onerror = () => res('');
+      r.readAsDataURL(blob);
+    });
+  } catch (e) { console.error('imagemParaDataURL', e); return ''; }
+}
+
+// Gera e baixa o PDF de UM registro (lado do operador)
+async function gerarPdfRegistro(reg, maquina) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210; let y = 0;
+
+  // Cabeçalho
+  doc.setFillColor(27, 58, 92); doc.rect(0, 0, W, 26, 'F');
+  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text('Registro de Máquina', 14, 12);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  doc.text('Construtora Axial — Gestão de Frota', 14, 19);
+  y = 34;
+
+  doc.setTextColor(30);
+  const linha = (rotulo, valor) => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.text(rotulo, 14, y);
+    doc.setFont('helvetica', 'normal'); doc.text(String(valor || '—'), 70, y);
+    y += 7;
+  };
+
+  linha('Máquina:', `${maquina.codigo ? maquina.codigo + ' · ' : ''}${maquina.descricao}`);
+  if (maquina.tipo === 'prestador') linha('Empresa locadora:', maquina.empresaLocadora || '—');
+  linha('Obra:', reg.obra || maquina.obra);
+  linha('Operador:', reg.operador);
+  linha('Data/hora:', dataHoraBR(reg.criadoEm || new Date().toISOString()));
+  linha('Status:', reg.status === 'funcional' ? 'FUNCIONAL' : 'NÃO FUNCIONAL');
+  if (reg.status === 'funcional') {
+    linha(unidadeMedidor(maquina)+':', reg.horimetroNA ? 'Não aplicável' : (reg.horimetro != null ? reg.horimetro + ' ' + unidadeSufixo(maquina) : '—'));
+  } else {
+    linha('Motivo da parada:', reg.motivoParada);
+  }
+  if (reg.indisponivelMinutos != null) linha('Indisponibilidade:', formatarDuracao(reg.indisponivelMinutos));
+  if (reg.observacao) {
+    doc.setFont('helvetica', 'bold'); doc.text('Observação:', 14, y); y += 6;
+    doc.setFont('helvetica', 'normal');
+    const obsLines = doc.splitTextToSize(reg.observacao, W - 28);
+    doc.text(obsLines, 14, y); y += obsLines.length * 5 + 4;
+  }
+
+  // Checklist
+  const itensCheck = (reg.checklist || []).filter(c => c.status);
+  if (itensCheck.length) {
+    y += 2; doc.setDrawColor(220); doc.line(14, y, W - 14, y); y += 7;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.text('Checklist de itens', 14, y); y += 8;
+    doc.setFontSize(10);
+    for (const c of itensCheck) {
+      if (y > 270) { doc.addPage(); y = 20; }
+      const ok = c.status === 'ok';
+      doc.setFont('helvetica', 'bold'); doc.setTextColor(ok ? 22 : 220, ok ? 163 : 38, ok ? 74 : 38);
+      doc.text(ok ? '[ OK ]' : '[ NÃO OK ]', 14, y);
+      doc.setTextColor(30); doc.setFont('helvetica', 'normal');
+      doc.text(c.item, 42, y);
+      y += 6;
+      if (c.obs) { doc.setFont('helvetica', 'italic'); doc.setTextColor(120);
+        const ol = doc.splitTextToSize('↳ ' + c.obs, W - 56); doc.text(ol, 42, y); doc.setTextColor(30); doc.setFont('helvetica', 'normal'); y += ol.length * 5; }
+    }
+  }
+
+  // Foto do painel
+  if (reg.fotoUrl) {
+    const dataUrl = await imagemParaDataURL(reg.fotoUrl);
+    if (dataUrl) {
+      if (y > 200) { doc.addPage(); y = 20; }
+      y += 4; doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text('Foto do painel', 14, y); y += 6;
+      try { doc.addImage(dataUrl, 'JPEG', 14, y, 80, 60); y += 66; } catch(e) {}
+    }
+  }
+
+  // Fotos extras
+  if ((reg.fotosExtras || []).length) {
+    let x = 14;
+    if (y > 210) { doc.addPage(); y = 20; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text('Fotos adicionais', 14, y); y += 6;
+    for (const url of reg.fotosExtras) {
+      const d = await imagemParaDataURL(url);
+      if (!d) continue;
+      if (x + 60 > W - 14) { x = 14; y += 50; }
+      if (y > 250) { doc.addPage(); y = 20; x = 14; }
+      try { doc.addImage(d, 'JPEG', x, y, 58, 44); x += 64; } catch(e) {}
+    }
+    y += 50;
+  }
+
+  const nomeArq = `registro_${(maquina.codigo || maquina.descricao).replace(/\s+/g,'_')}_${new Date().toISOString().slice(0,10)}.pdf`;
+  doc.save(nomeArq);
+}
+
+// Calcula o resumo por máquina dentro de um período [ini, fim]
+// Retorna lista de { maquina, dias:{funcionando,parado,comRegistro}, horas, paradoMin, motivos:{}, disponibilidade }
+function calcularResumoPeriodo(registros, maquinas, ini, fim) {
+  const iniMs = ini ? new Date(ini + 'T00:00:00').getTime() : -Infinity;
+  const fimMs = fim ? new Date(fim + 'T23:59:59').getTime() : Infinity;
+  const noPeriodo = registros.filter(r => {
+    const t = new Date(r.criadoEm).getTime();
+    return t >= iniMs && t <= fimMs;
+  });
+
+  const porMaquina = {};
+  for (const m of maquinas) {
+    porMaquina[m.id] = {
+      maquina: m,
+      diasFunc: new Set(), diasParado: new Set(),
+      horasTrabalhadas: 0, paradoMin: 0, trabalhoPorDia: {},
+      motivos: {}, registros: [],
+    };
+  }
+
+  // ordena cronológico p/ calcular trabalho (diferença entre leituras consecutivas)
+  const cron = [...noPeriodo].sort((a,b) => new Date(a.criadoEm) - new Date(b.criadoEm));
+  const leituraAnterior = {}; // maquinaId -> { valor, dia }
+  for (const r of cron) {
+    const bucket = porMaquina[r.maquinaId];
+    if (!bucket) continue;
+    bucket.registros.push(r);
+    const dia = new Date(r.criadoEm).toISOString().slice(0,10);
+    if (r.status === 'funcional') {
+      bucket.diasFunc.add(dia);
+      if (r.horimetro != null) {
+        const ant = leituraAnterior[r.maquinaId];
+        if (ant != null) {
+          const dif = r.horimetro - ant.valor;
+          // como o check é no início do dia, o trabalho pertence ao dia da leitura ANTERIOR
+          if (dif > 0) {
+            bucket.horasTrabalhadas += dif;
+            bucket.trabalhoPorDia[ant.dia] = (bucket.trabalhoPorDia[ant.dia] || 0) + dif;
+          }
+        }
+        leituraAnterior[r.maquinaId] = { valor: r.horimetro, dia };
+      }
+    } else {
+      bucket.diasParado.add(dia);
+      bucket.motivos[r.motivoParada] = (bucket.motivos[r.motivoParada] || 0) + 1;
+    }
+    if (r.indisponivelMinutos != null) bucket.paradoMin += r.indisponivelMinutos;
+  }
+
+  return Object.values(porMaquina)
+    .filter(b => b.registros.length > 0)
+    .map(b => {
+      const df = b.diasFunc.size, dp = b.diasParado.size;
+      const totalDias = df + dp;
+      const disponibilidade = totalDias > 0 ? Math.round((df / totalDias) * 100) : null;
+      return {
+        maquina: b.maquina,
+        diasFuncionando: df,
+        diasParado: dp,
+        horasTrabalhadas: Math.round(b.horasTrabalhadas),
+        paradoMin: b.paradoMin,
+        motivos: b.motivos,
+        disponibilidade,
+        registros: b.registros,
+      };
+    });
+}
+
+// Lista, por máquina ativa, os dias do período SEM nenhum registro
+function diasSemRegistro(registros, maquinas, ini, fim) {
+  if (!ini || !fim) return [];
+  const dias = [];
+  const d0 = new Date(ini + 'T00:00:00');
+  const d1 = new Date(fim + 'T00:00:00');
+  for (let d = new Date(d0); d <= d1; d.setDate(d.getDate() + 1)) {
+    dias.push(d.toISOString().slice(0,10));
+  }
+  // dias com registro por máquina
+  const comRegistro = {};
+  for (const r of registros) {
+    const dia = new Date(r.criadoEm).toISOString().slice(0,10);
+    if (dia < ini || dia > fim) continue;
+    (comRegistro[r.maquinaId] = comRegistro[r.maquinaId] || new Set()).add(dia);
+  }
+  return maquinas.filter(m => m.ativa).map(m => {
+    const feitos = comRegistro[m.id] || new Set();
+    const faltantes = dias.filter(dia => !feitos.has(dia));
+    return { maquina: m, faltantes, totalDias: dias.length };
+  }).filter(x => x.faltantes.length > 0);
+}
+
+// Gera e baixa o PDF do admin (todos os checklists do período + resumo)
+function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210; let y = 0;
+
+  doc.setFillColor(27, 58, 92); doc.rect(0, 0, W, 26, 'F');
+  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text('Relatório de Frota', 14, 12);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  const periodoTxt = (ini || fim) ? `Período: ${ini ? ini.split('-').reverse().join('/') : 'início'} a ${fim ? fim.split('-').reverse().join('/') : 'hoje'}` : 'Todos os registros';
+  doc.text('Construtora Axial — ' + periodoTxt, 14, 19);
+  y = 34;
+
+  // Resumo por máquina
+  doc.setTextColor(30); doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
+  doc.text('Resumo por máquina', 14, y); y += 8;
+
+  doc.setFontSize(8.5);
+  const head = ['Máquina', 'Dias func.', 'Dias parado', 'Trabalho', 'Tempo parado', 'Disponib.'];
+  const colX = [14, 78, 100, 124, 146, 178];
+  doc.setFont('helvetica', 'bold'); doc.setFillColor(240,242,245); doc.rect(12, y-5, W-24, 7, 'F');
+  head.forEach((h,i) => doc.text(h, colX[i], y)); y += 7;
+  doc.setFont('helvetica', 'normal');
+  for (const r of resumo) {
+    if (y > 275) { doc.addPage(); y = 20; }
+    const nome = `${r.maquina.codigo ? r.maquina.codigo+' ' : ''}${r.maquina.descricao}`;
+    doc.text(doc.splitTextToSize(nome, 60)[0], colX[0], y);
+    doc.text(String(r.diasFuncionando), colX[1], y);
+    doc.text(String(r.diasParado), colX[2], y);
+    doc.text(r.maquina.possuiHorimetro ? String(r.horasTrabalhadas)+unidadeSufixo(r.maquina) : '—', colX[3], y);
+    doc.text(formatarDuracao(r.paradoMin || 0), colX[4], y);
+    doc.text(r.disponibilidade != null ? r.disponibilidade+'%' : '—', colX[5], y);
+    y += 6.5;
+  }
+
+  // Motivos de parada (agregado)
+  y += 4; if (y > 260) { doc.addPage(); y = 20; }
+  const motivosTotais = {};
+  resumo.forEach(r => Object.entries(r.motivos).forEach(([m,c]) => motivosTotais[m] = (motivosTotais[m]||0)+c));
+  if (Object.keys(motivosTotais).length) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.text('Motivos de parada', 14, y); y += 7;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    Object.entries(motivosTotais).sort((a,b)=>b[1]-a[1]).forEach(([m,c]) => {
+      if (y > 280) { doc.addPage(); y = 20; }
+      doc.text(`• ${m}: ${c} ocorrência(s)`, 16, y); y += 6;
+    });
+  }
+
+  // Detalhe dos registros
+  doc.addPage(); y = 20;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.text('Registros detalhados', 14, y); y += 8;
+  doc.setFontSize(9.5);
+  const cron = [...registrosPeriodo].sort((a,b) => new Date(b.criadoEm) - new Date(a.criadoEm));
+  for (const r of cron) {
+    if (y > 270) { doc.addPage(); y = 20; }
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(30);
+    doc.text(`${dataHoraBR(r.criadoEm)} — ${r.maquinaCodigo ? r.maquinaCodigo+' ' : ''}${r.maquinaDescricao}`, 14, y); y += 5;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+    const st = r.status === 'funcional'
+      ? `Funcional · ${r.horimetroNA ? 'horímetro N/A' : (r.horimetro!=null ? r.horimetro+'h' : 's/ horímetro')}`
+      : `NÃO FUNCIONAL · ${r.motivoParada}`;
+    doc.setTextColor(r.status==='funcional'?22:200, r.status==='funcional'?120:40, 40);
+    doc.text(st, 16, y); doc.setTextColor(80);
+    doc.text(`Operador: ${r.operador || '—'}`, 120, y); y += 5;
+    if (r.indisponivelMinutos != null) { doc.setTextColor(140,80,10); doc.text(`Indisponibilidade: ${formatarDuracao(r.indisponivelMinutos)}`, 16, y); y += 5; }
+    const nok = (r.checklist||[]).filter(c => c.status === 'nok');
+    if (nok.length) { doc.setTextColor(200,40,40); doc.text(`Itens NÃO OK: ${nok.map(c=>c.item).join(', ')}`, 16, y, { maxWidth: W-30 }); y += 5; }
+    doc.setTextColor(30); doc.setFontSize(9.5); y += 2;
+  }
+
+  doc.save(`relatorio_frota_${new Date().toISOString().slice(0,10)}.pdf`);
+}
+
+// Gera um PDF com TODOS os checklists do período (um por seção, detalhado + foto do painel)
+async function gerarPdfTodosRegistros(registrosPeriodo, ini, fim, maquinas) {
+  const mapaM = {};
+  for (const m of (maquinas || [])) mapaM[m.id] = m;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210; let y = 0;
+
+  doc.setFillColor(27, 58, 92); doc.rect(0, 0, W, 26, 'F');
+  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text('Checklists do período', 14, 12);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  const periodoTxt = (ini || fim) ? `${ini ? ini.split('-').reverse().join('/') : 'início'} a ${fim ? fim.split('-').reverse().join('/') : 'hoje'}` : 'Todos os registros';
+  doc.text(`Construtora Axial — ${periodoTxt} — ${registrosPeriodo.length} registro(s)`, 14, 19);
+  y = 34;
+
+  const cron = [...registrosPeriodo].sort((a,b) => new Date(b.criadoEm) - new Date(a.criadoEm));
+
+  for (let idx = 0; idx < cron.length; idx++) {
+    const r = cron[idx];
+    if (y > 245) { doc.addPage(); y = 20; }
+
+    // título do registro
+    doc.setDrawColor(220); doc.setLineWidth(0.3); doc.line(14, y, W-14, y); y += 6;
+    doc.setTextColor(27,58,92); doc.setFont('helvetica','bold'); doc.setFontSize(12);
+    doc.text(`${r.maquinaCodigo ? r.maquinaCodigo+' · ' : ''}${r.maquinaDescricao}`, 14, y); y += 6;
+
+    doc.setTextColor(60); doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    doc.text(`${dataHoraBR(r.criadoEm)}`, 14, y);
+    doc.text(`Operador: ${r.operador || '—'}`, 90, y);
+    doc.text(`Obra: ${r.obra || '—'}`, 150, y); y += 5.5;
+
+    const func = r.status === 'funcional';
+    doc.setFont('helvetica','bold');
+    doc.setTextColor(func?22:200, func?120:40, 40);
+    const st = func
+      ? `FUNCIONAL · ${r.horimetroNA ? 'medidor N/A' : (r.horimetro!=null ? r.horimetro+unidadeSufixo(mapaM[r.maquinaId]) : 's/ medidor')}`
+      : `NÃO FUNCIONAL · ${r.motivoParada || ''}`;
+    doc.text(st, 14, y); doc.setTextColor(30); doc.setFont('helvetica','normal'); y += 6;
+    if (r.indisponivelMinutos != null) { doc.setTextColor(140,80,10); doc.text(`Indisponibilidade: ${formatarDuracao(r.indisponivelMinutos)}`, 14, y); doc.setTextColor(30); y += 5.5; }
+
+    // checklist
+    const itens = (r.checklist || []).filter(c => c.status);
+    if (itens.length) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.text('Checklist:', 14, y); y += 5;
+      doc.setFont('helvetica','normal');
+      for (const c of itens) {
+        if (y > 280) { doc.addPage(); y = 20; }
+        const ok = c.status === 'ok';
+        doc.setTextColor(ok?22:200, ok?120:40, 40); doc.setFont('helvetica','bold');
+        doc.text(ok ? 'OK' : 'NÃO OK', 16, y);
+        doc.setTextColor(40); doc.setFont('helvetica','normal');
+        doc.text(c.item + (c.obs ? ` — ${c.obs}` : ''), 36, y, { maxWidth: W-50 }); y += 5;
+      }
+    }
+    if (r.observacao) { doc.setFont('helvetica','italic'); doc.setTextColor(90);
+      const ol = doc.splitTextToSize(`Obs: ${r.observacao}`, W-30); doc.text(ol, 14, y); doc.setTextColor(30); doc.setFont('helvetica','normal'); y += ol.length*5; }
+
+    // fotos: painel + adicionais, em grade de miniaturas
+    const urls = [];
+    if (r.fotoUrl) urls.push(r.fotoUrl);
+    for (const u of (r.fotosExtras || [])) urls.push(u);
+    if (urls.length) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(40);
+      if (y > 270) { doc.addPage(); y = 20; }
+      doc.text('Fotos:', 14, y); y += 5;
+      const fw = 44, fh = 33, gap = 4, perRow = 4;
+      let col = 0, x = 14, rowMaxBottom = y;
+      for (const u of urls) {
+        const d = await imagemParaDataURL(u);
+        if (!d) continue;
+        if (col === perRow) { col = 0; x = 14; y = rowMaxBottom + gap; }
+        if (y + fh > 287) { doc.addPage(); y = 20; col = 0; x = 14; rowMaxBottom = y; }
+        try { doc.addImage(d, 'JPEG', x, y, fw, fh); } catch(e) {}
+        x += fw + gap; col++; rowMaxBottom = Math.max(rowMaxBottom, y + fh);
+      }
+      y = rowMaxBottom;
+    }
+    y += 6;
+  }
+
+  doc.save(`checklists_${new Date().toISOString().slice(0,10)}.pdf`);
+}
+
+// ============================================================
+// ESTILOS COMPARTILHADOS
+// ============================================================
+const S = {
+  campo: {
+    width:'100%', boxSizing:'border-box', padding:'11px 13px', fontSize:15,
+    border:`1.5px solid ${COR.borda}`, borderRadius:10, outline:'none',
+    fontFamily:'inherit', color:COR.texto, background:'#fff', transition:'border-color .15s',
+  },
+  rotulo: { display:'block', fontSize:12.5, fontWeight:700, color:COR.cinza, marginBottom:6, letterSpacing:.2, textTransform:'uppercase' },
+  botaoPrim: {
+    display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8,
+    background:COR.azul, color:'#fff', border:'none', borderRadius:10,
+    padding:'12px 18px', fontSize:15, fontWeight:700, cursor:'pointer',
+    fontFamily:'inherit', transition:'background .15s',
+  },
+  botaoSec: {
+    display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8,
+    background:'#fff', color:COR.azul, border:`1.5px solid ${COR.borda}`, borderRadius:10,
+    padding:'12px 18px', fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+  },
+  card: { background:COR.card, border:`1px solid ${COR.borda}`, borderRadius:14, padding:16, boxShadow:'0 1px 2px rgba(16,24,40,.04)' },
+};
+
+function Badge({ cor, bg, children, style }) {
+  return (
+    <span style={{
+      display:'inline-flex', alignItems:'center', gap:5, padding:'3px 10px',
+      borderRadius:999, fontSize:12, fontWeight:700, color:cor, background:bg,
+      whiteSpace:'nowrap', ...style,
+    }}>{children}</span>
+  );
+}
+
+function BadgeTipo({ tipo }) {
+  return tipo === 'axial'
+    ? <Badge cor={COR.azul} bg="#EFF6FF"><Factory size={12} /> Axial</Badge>
+    : <Badge cor="#7C3AED" bg="#F5F3FF"><Hash size={12} /> Prestador</Badge>;
+}
+
+function BadgeManutencao({ maquina }) {
+  const m = calcularManutencao(maquina);
+  if (m.rotulo === 'N/A') return <Badge cor={COR.cinza} bg="#F3F4F6">N/A</Badge>;
+  const bg = m.vencido ? COR.vermelhoBg : (m.rotulo === 'Próxima' ? COR.amareloBg : COR.verdeBg);
+  return (
+    <Badge cor={m.cor} bg={bg}>
+      <Wrench size={12} /> {m.rotulo}
+      {m.restante != null && m.restante > 0 && <span style={{opacity:.7, fontWeight:600}}>· {m.restante}{unidadeSufixo(maquina)}</span>}
+    </Badge>
+  );
+}
+
+// ============================================================
+// FORMULÁRIO DE MÁQUINA (adicionar / editar)
+// ============================================================
+function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
+  const ed = !!maquina;
+  const [f, setF] = useState(maquina || {
+    codigo:'', descricao:'', modelo:'', fabricante:'', numeroSerie:'',
+    obra: (obras[0] && obras[0].nome) || '', tipo:'axial', unidade:'horas', empresaLocadora:'', especificacoes:{},
+    possuiHorimetro:true, horimetroInicial:0, horimetroAtual:0,
+    intervaloManutencao:500, horimetroUltimaManutencao:0,
+    statusAtual:'funcional', ativa:true,
+  });
+  const [erro, setErro] = useState('');
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const setEspec = (k, v) => setF(p => ({ ...p, especificacoes: { ...(p.especificacoes || {}), [k]: v } }));
+
+  // Campos de especificação técnica (óleos e filtros) — só para máquinas axial
+  const CAMPOS_ESPEC = [
+    ['oleoMotor', 'Óleo do motor utilizado'],
+    ['oleoHidraulico', 'Óleo hidráulico utilizado'],
+    ['filtroAr1', 'Filtro de ar 1'],
+    ['filtroAr2', 'Filtro de ar 2'],
+    ['filtroComb1', 'Filtro de combustível 1'],
+    ['filtroComb2', 'Filtro de combustível 2'],
+    ['separador', 'Separador'],
+    ['filtroOleo1', 'Filtro de óleo 1'],
+    ['filtroOleo2', 'Filtro de óleo 2'],
+  ];
+
+  function salvar() {
+    if (!f.descricao.trim()) { setErro('A descrição é obrigatória.'); return; }
+    const dados = { ...f };
+    // Se for novo, horímetro atual começa igual ao inicial
+    if (!ed) dados.horimetroAtual = Number(f.horimetroInicial) || 0;
+    onSalvar(dados);
+  }
+
+  const inputNum = (k, label, sufixo) => (
+    <div>
+      <label style={S.rotulo}>{label}</label>
+      <div style={{position:'relative'}}>
+        <input type="number" inputMode="numeric" value={f[k]} style={S.campo}
+          onChange={e => set(k, e.target.value === '' ? '' : Number(e.target.value))} />
+        {sufixo && <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{sufixo}</span>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{maxWidth:680, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:20}}>
+        <button onClick={onCancelar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar">
+          <ArrowLeft size={20} />
+        </button>
+        <h2 style={{margin:0, fontSize:22, color:COR.azul, fontWeight:800}}>
+          {ed ? 'Editar máquina' : 'Nova máquina'}
+        </h2>
+      </div>
+
+      <div style={{...S.card, display:'flex', flexDirection:'column', gap:16}}>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
+          <div>
+            <label style={S.rotulo}>Código</label>
+            <input value={f.codigo} placeholder="Ex: JCB-01" style={S.campo} onChange={e => set('codigo', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.rotulo}>Tipo</label>
+            <select value={f.tipo} style={S.campo} onChange={e => set('tipo', e.target.value)}>
+              {TIPOS_MAQUINA.map(t => <option key={t.valor} value={t.valor}>{t.rotulo}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {f.tipo === 'prestador' && (
+          <div>
+            <label style={S.rotulo}>Empresa locadora</label>
+            <div style={{position:'relative'}}>
+              <Building size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+              <input value={f.empresaLocadora || ''} placeholder="Nome da empresa proprietária" style={{...S.campo, paddingLeft:42}} onChange={e => set('empresaLocadora', e.target.value)} />
+            </div>
+          </div>
+        )}
+
+        <div>
+          <label style={S.rotulo}>Descrição *</label>
+          <input value={f.descricao} placeholder="Ex: Retro JCB" style={S.campo} onChange={e => set('descricao', e.target.value)} />
+        </div>
+
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
+          <div>
+            <label style={S.rotulo}>Fabricante</label>
+            <input value={f.fabricante} style={S.campo} onChange={e => set('fabricante', e.target.value)} />
+          </div>
+          <div>
+            <label style={S.rotulo}>Modelo</label>
+            <input value={f.modelo} style={S.campo} onChange={e => set('modelo', e.target.value)} />
+          </div>
+        </div>
+
+        <div>
+          <label style={S.rotulo}>Número de série</label>
+          <input value={f.numeroSerie} style={S.campo} onChange={e => set('numeroSerie', e.target.value)} />
+        </div>
+
+        <div>
+          <label style={S.rotulo}>Obra vinculada</label>
+          <select value={f.obra} style={S.campo} onChange={e => set('obra', e.target.value)}>
+            <option value="">— selecionar —</option>
+            {obras.filter(o => o.ativa).map(o => <option key={o.id} value={o.nome}>{o.nome}</option>)}
+          </select>
+        </div>
+
+        <div style={{height:1, background:COR.borda, margin:'2px 0'}} />
+
+        <div>
+          <label style={S.rotulo}>Tipo de medição</label>
+          <div style={{display:'flex', gap:10}}>
+            <button type="button" onClick={() => set('unidade','horas')} style={{flex:1, padding:'11px', borderRadius:10, border:`1.5px solid ${f.unidade!=='km'?COR.azul:COR.borda}`, background: f.unidade!=='km'?'#EFF6FF':'#fff', color: f.unidade!=='km'?COR.azul:COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>Horímetro (horas)</button>
+            <button type="button" onClick={() => set('unidade','km')} style={{flex:1, padding:'11px', borderRadius:10, border:`1.5px solid ${f.unidade==='km'?COR.azul:COR.borda}`, background: f.unidade==='km'?'#EFF6FF':'#fff', color: f.unidade==='km'?COR.azul:COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>Hodômetro (km)</button>
+          </div>
+        </div>
+
+        <label style={{display:'flex', alignItems:'center', gap:10, cursor:'pointer', fontSize:15, fontWeight:600, color:COR.texto}}>
+          <input type="checkbox" checked={f.possuiHorimetro} onChange={e => set('possuiHorimetro', e.target.checked)} style={{width:18, height:18}} />
+          Possui {f.unidade==='km' ? 'hodômetro' : 'horímetro'}
+        </label>
+
+        {f.possuiHorimetro && (
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
+            {inputNum('horimetroInicial', (f.unidade==='km'?'Hodômetro':'Horímetro')+' inicial', unidadeSufixo(f))}
+            {ed && inputNum('horimetroAtual', (f.unidade==='km'?'Hodômetro':'Horímetro')+' atual', unidadeSufixo(f))}
+          </div>
+        )}
+
+        {f.tipo === 'axial' && (
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
+            {inputNum('intervaloManutencao', 'Intervalo de manutenção', unidadeSufixo(f))}
+            {inputNum('horimetroUltimaManutencao', (f.unidade==='km'?'Hodômetro':'Horímetro')+' na última revisão', unidadeSufixo(f))}
+          </div>
+        )}
+
+        {f.tipo === 'axial' && (
+          <div>
+            <div style={{height:1, background:COR.borda, margin:'2px 0 14px'}} />
+            <label style={{...S.rotulo, fontSize:13.5, color:COR.azul}}>Especificações (óleos e filtros)</label>
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:4}}>
+              {CAMPOS_ESPEC.map(([chave, rotulo]) => (
+                <div key={chave}>
+                  <label style={{...S.rotulo, fontSize:11.5}}>{rotulo}</label>
+                  <input value={(f.especificacoes && f.especificacoes[chave]) || ''} placeholder="—" style={{...S.campo, padding:'9px 11px', fontSize:14}} onChange={e => setEspec(chave, e.target.value)} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {erro && <div style={{color:COR.vermelho, fontSize:13.5, fontWeight:600}}>{erro}</div>}
+
+        <div style={{display:'flex', gap:10, marginTop:4}}>
+          <button onClick={salvar} style={{...S.botaoPrim, flex:1}}><Save size={18} /> Salvar</button>
+          <button onClick={onCancelar} style={S.botaoSec}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CARD DE MÁQUINA (item da lista)
+// ============================================================
+function CardMaquina({ m, onEditar, onToggleAtiva }) {
+  return (
+    <div style={{...S.card, padding:0, overflow:'hidden', opacity: m.ativa ? 1 : 0.62}}>
+      <div style={{display:'flex', alignItems:'stretch'}}>
+        <div style={{width:6, background: m.ativa ? COR.azul : COR.cinza}} />
+        <div style={{flex:1, padding:'14px 16px'}}>
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10}}>
+            <div style={{minWidth:0}}>
+              <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+                {m.codigo && <span style={{fontSize:12.5, fontWeight:800, color:COR.azulCl, background:'#EFF6FF', padding:'2px 8px', borderRadius:6}}>{m.codigo}</span>}
+                <h3 style={{margin:0, fontSize:16.5, fontWeight:800, color:COR.texto}}>{m.descricao}</h3>
+              </div>
+              <div style={{fontSize:13, color:COR.cinza, marginTop:4}}>
+                {[m.fabricante, m.modelo].filter(Boolean).join(' · ') || '—'}
+                {m.numeroSerie && <span style={{display:'block', marginTop:2, fontFamily:'monospace', fontSize:12}}>NS: {m.numeroSerie}</span>}
+                {m.tipo === 'prestador' && m.empresaLocadora && <span style={{display:'block', marginTop:2, fontSize:12, color:'#7C3AED', fontWeight:600}}>Locada: {m.empresaLocadora}</span>}
+              </div>
+            </div>
+            <div style={{display:'flex', flexDirection:'column', gap:6, alignItems:'flex-end'}}>
+              <BadgeTipo tipo={m.tipo} />
+              {!m.ativa && <Badge cor={COR.cinza} bg="#F3F4F6"><CircleSlash size={12}/> Inativa</Badge>}
+            </div>
+          </div>
+
+          <div style={{display:'flex', alignItems:'center', gap:14, marginTop:12, flexWrap:'wrap', fontSize:13}}>
+            {m.obra && <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.cinza}}><Building size={14}/> {m.obra}</span>}
+            {m.possuiHorimetro
+              ? <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.texto, fontWeight:700}}><Gauge size={14}/> {Math.round(m.horimetroAtual)} {unidadeSufixo(m)}</span>
+              : <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.cinza}}><Gauge size={14}/> sem {m.unidade==='km'?'hodômetro':'horímetro'}</span>}
+            {m.tipo === 'axial' && <BadgeManutencao maquina={m} />}
+          </div>
+
+          <div style={{display:'flex', gap:8, marginTop:14}}>
+            <button onClick={() => onEditar(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1}}><Edit size={15}/> Editar</button>
+            <button onClick={() => onToggleAtiva(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, color: m.ativa ? COR.vermelho : COR.verde, borderColor: m.ativa ? '#FECACA' : '#A7F3D0'}}>
+              {m.ativa ? <><CircleSlash size={15}/> Inativar</> : <><Power size={15}/> Reativar</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// GESTÃO DE OBRAS (modal-like inline)
+// ============================================================
+function GestaoObras({ obras, onCriar, onRenomear, onExcluir, onFechar }) {
+  const [novo, setNovo] = useState('');
+  const [editId, setEditId] = useState(null);
+  const [editNome, setEditNome] = useState('');
+
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.45)', zIndex:500, display:'flex', alignItems:'flex-end', justifyContent:'center'}} onClick={onFechar}>
+      <div onClick={e => e.stopPropagation()} style={{background:'#fff', width:'100%', maxWidth:560, borderRadius:'18px 18px 0 0', padding:20, maxHeight:'85vh', overflow:'auto'}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16}}>
+          <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul, display:'flex', alignItems:'center', gap:8}}><Building size={20}/> Obras</h3>
+          <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:8}}><X size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', gap:8, marginBottom:16}}>
+          <input value={novo} placeholder="Nome da nova obra" style={S.campo} onChange={e => setNovo(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && novo.trim()) { onCriar(novo.trim()); setNovo(''); } }} />
+          <button onClick={() => { if (novo.trim()) { onCriar(novo.trim()); setNovo(''); } }} style={{...S.botaoPrim, padding:'11px 16px'}}><Plus size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', flexDirection:'column', gap:8}}>
+          {obras.length === 0 && <p style={{color:COR.cinza, textAlign:'center', padding:'20px 0'}}>Nenhuma obra cadastrada.</p>}
+          {obras.map(o => (
+            <div key={o.id} style={{display:'flex', alignItems:'center', gap:8, padding:'10px 12px', border:`1px solid ${COR.borda}`, borderRadius:10}}>
+              {editId === o.id ? (
+                <>
+                  <input value={editNome} style={{...S.campo, padding:'7px 10px'}} autoFocus onChange={e => setEditNome(e.target.value)} />
+                  <button onClick={() => { onRenomear(o.id, editNome.trim()); setEditId(null); }} style={{...S.botaoPrim, padding:'7px 12px'}}><Save size={16}/></button>
+                  <button onClick={() => setEditId(null)} style={{...S.botaoSec, padding:'7px 12px'}}><X size={16}/></button>
+                </>
+              ) : (
+                <>
+                  <Building size={16} color={COR.cinza}/>
+                  <span style={{flex:1, fontWeight:600, color:COR.texto}}>{o.nome}</span>
+                  <button onClick={() => { setEditId(o.id); setEditNome(o.nome); }} style={{...S.botaoSec, padding:'6px 10px'}}><Edit size={15}/></button>
+                  <button onClick={() => onExcluir(o)} style={{...S.botaoSec, padding:'6px 10px', color:COR.vermelho, borderColor:'#FECACA'}}><Trash2 size={15}/></button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+        <p style={{fontSize:12, color:COR.cinza, marginTop:14, lineHeight:1.5}}>
+          As obras aparecem como opção no cadastro de máquinas e servem para agrupar os relatórios.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// TELA: GESTÃO DE MÁQUINAS (lista + busca + filtros)
+// ============================================================
+function TelaMaquinas({ maquinas, obras, onNova, onEditar, onToggleAtiva, onAbrirObras, carregando }) {
+  const [busca, setBusca] = useState('');
+  const [fTipo, setFTipo] = useState('todos');
+  const [fObra, setFObra] = useState('todas');
+  const [mostrarInativas, setMostrarInativas] = useState(false);
+
+  const filtradas = maquinas.filter(m => {
+    if (!mostrarInativas && !m.ativa) return false;
+    if (fTipo !== 'todos' && m.tipo !== fTipo) return false;
+    if (fObra !== 'todas' && m.obra !== fObra) return false;
+    if (busca.trim()) {
+      const q = busca.toLowerCase();
+      const alvo = `${m.codigo} ${m.descricao} ${m.fabricante} ${m.modelo} ${m.numeroSerie} ${m.obra}`.toLowerCase();
+      if (!alvo.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const totAtivas = maquinas.filter(m => m.ativa).length;
+  const totInativas = maquinas.length - totAtivas;
+
+  return (
+    <div style={{maxWidth:760, margin:'0 auto'}}>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom:6, flexWrap:'wrap'}}>
+        <div>
+          <h2 style={{margin:0, fontSize:24, fontWeight:800, color:COR.azul}}>Máquinas</h2>
+          <p style={{margin:'4px 0 0', color:COR.cinza, fontSize:14}}>{totAtivas} ativas{totInativas ? ` · ${totInativas} inativas` : ''}</p>
+        </div>
+        <div style={{display:'flex', gap:8}}>
+          <button onClick={onAbrirObras} style={S.botaoSec}><Building size={18}/> Obras</button>
+          <button onClick={onNova} style={S.botaoPrim}><Plus size={18}/> Nova máquina</button>
+        </div>
+      </div>
+
+      {maquinasParaRevisao(maquinas).length > 0 && (
+        <div style={{margin:'16px 0 0'}}><CardRevisao maquinas={maquinas} compacto /></div>
+      )}
+
+      <div style={{margin:'18px 0', display:'flex', flexDirection:'column', gap:10}}>
+        <div style={{position:'relative'}}>
+          <Search size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}} />
+          <input value={busca} placeholder="Buscar por código, descrição, série…" style={{...S.campo, paddingLeft:42}} onChange={e => setBusca(e.target.value)} />
+        </div>
+        <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
+          <select value={fTipo} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFTipo(e.target.value)}>
+            <option value="todos">Todos os tipos</option>
+            <option value="axial">Axial</option>
+            <option value="prestador">Prestador</option>
+          </select>
+          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFObra(e.target.value)}>
+            <option value="todas">Todas as obras</option>
+            {obras.map(o => <option key={o.id} value={o.nome}>{o.nome}</option>)}
+          </select>
+          {totInativas > 0 && (
+            <label style={{display:'flex', alignItems:'center', gap:7, fontSize:13.5, color:COR.cinza, fontWeight:600, cursor:'pointer', marginLeft:'auto'}}>
+              <input type="checkbox" checked={mostrarInativas} onChange={e => setMostrarInativas(e.target.checked)} style={{width:16, height:16}}/>
+              Mostrar inativas
+            </label>
+          )}
+        </div>
+      </div>
+
+      {carregando ? (
+        <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando máquinas…</p>
+      ) : filtradas.length === 0 ? (
+        <div style={{textAlign:'center', padding:'48px 20px', color:COR.cinza}}>
+          <Factory size={40} color={COR.borda} />
+          <p style={{marginTop:12, fontWeight:600}}>Nenhuma máquina encontrada.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:12}}>
+          {filtradas.map(m => <CardMaquina key={m.id} m={m} onEditar={onEditar} onToggleAtiva={onToggleAtiva} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// LOGIN ADMIN
+// ============================================================
+function LoginAdmin({ onEntrar, onVoltar }) {
+  const [senha, setSenha] = useState('');
+  const [erro, setErro] = useState(false);
+  function entrar() {
+    if (senha === SENHA_ADMIN) onEntrar();
+    else { setErro(true); setSenha(''); }
+  }
+  return (
+    <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:20}}>
+      <div style={{...S.card, maxWidth:380, width:'100%', textAlign:'center', padding:28}}>
+        <div style={{width:60, height:60, borderRadius:16, background:COR.azul, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px'}}>
+          <Shield size={30} color="#fff" />
+        </div>
+        <h2 style={{margin:'0 0 6px', fontSize:22, fontWeight:800, color:COR.azul}}>Painel da Frota</h2>
+        <p style={{margin:'0 0 20px', color:COR.cinza, fontSize:14}}>Acesso administrativo</p>
+        <div style={{position:'relative', marginBottom:12}}>
+          <Lock size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+          <input type="password" value={senha} placeholder="Senha" autoFocus
+            style={{...S.campo, paddingLeft:42, borderColor: erro ? COR.vermelho : COR.borda}}
+            onChange={e => { setSenha(e.target.value); setErro(false); }}
+            onKeyDown={e => e.key === 'Enter' && entrar()} />
+        </div>
+        {erro && <p style={{color:COR.vermelho, fontSize:13, margin:'0 0 12px', fontWeight:600}}>Senha incorreta.</p>}
+        <button onClick={entrar} style={{...S.botaoPrim, width:'100%'}}>Entrar</button>
+        {onVoltar && <button onClick={onVoltar} style={{...S.botaoSec, width:'100%', marginTop:10, border:'none'}}>Voltar</button>}
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// FLUXO DO OPERADOR
+// ============================================================
+
+// --- Tela inicial: escolher Operador ou Administrador ---
+function TelaInicial({ onOperador, onValidador, onAdmin }) {
+  return (
+    <div style={{minHeight:'100vh', background:`linear-gradient(160deg, ${COR.azul} 0%, #14293f 100%)`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24}}>
+      <div style={{width:72, height:72, borderRadius:20, background:'rgba(255,255,255,.12)', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:18}}>
+        <Factory size={38} color="#fff" />
+      </div>
+      <h1 style={{color:'#fff', fontSize:28, fontWeight:800, margin:'0 0 4px', textAlign:'center'}}>Gestão de Frota</h1>
+      <p style={{color:'rgba(255,255,255,.65)', fontSize:15, margin:'0 0 36px'}}>Construtora Axial</p>
+
+      <div style={{display:'flex', flexDirection:'column', gap:14, width:'100%', maxWidth:360}}>
+        <button onClick={onOperador} style={{display:'flex', alignItems:'center', gap:14, background:'#fff', border:'none', borderRadius:16, padding:'20px 22px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', boxShadow:'0 4px 16px rgba(0,0,0,.15)'}}>
+          <div style={{width:46, height:46, borderRadius:12, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><User size={24} color={COR.azul}/></div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:17, fontWeight:800, color:COR.texto}}>Sou Operador</div>
+            <div style={{fontSize:13, color:COR.cinza, marginTop:2}}>Registrar status da máquina</div>
+          </div>
+          <ChevronRight size={20} color={COR.cinza}/>
+        </button>
+
+        <button onClick={onValidador} style={{display:'flex', alignItems:'center', gap:14, background:'#fff', border:'none', borderRadius:16, padding:'20px 22px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', boxShadow:'0 4px 16px rgba(0,0,0,.15)'}}>
+          <div style={{width:46, height:46, borderRadius:12, background:COR.verdeBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><CheckCircle2 size={24} color={COR.verde}/></div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:17, fontWeight:800, color:COR.texto}}>Validador</div>
+            <div style={{fontSize:13, color:COR.cinza, marginTop:2}}>Validar registros de campo</div>
+          </div>
+          <ChevronRight size={20} color={COR.cinza}/>
+        </button>
+
+        <button onClick={onAdmin} style={{display:'flex', alignItems:'center', gap:14, background:'rgba(255,255,255,.08)', border:'1.5px solid rgba(255,255,255,.2)', borderRadius:16, padding:'20px 22px', cursor:'pointer', fontFamily:'inherit', textAlign:'left'}}>
+          <div style={{width:46, height:46, borderRadius:12, background:'rgba(255,255,255,.12)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><Shield size={24} color="#fff"/></div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:17, fontWeight:800, color:'#fff'}}>Administrador</div>
+            <div style={{fontSize:13, color:'rgba(255,255,255,.6)', marginTop:2}}>Gestão da frota e relatórios</div>
+          </div>
+          <ChevronRight size={20} color="rgba(255,255,255,.6)"/>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// --- Operador: passo 1, escolher a máquina ---
+// --- Operador: passo 1, escolher a OBRA ---
+function OperadorSelecionaObra({ obras, maquinas, onEscolher, onVoltar }) {
+  const ativas = maquinas.filter(m => m.ativa);
+  // conta máquinas por obra (apenas obras com máquina ativa entram)
+  const contagem = {};
+  for (const m of ativas) {
+    const nome = m.obra || 'Sem obra';
+    contagem[nome] = (contagem[nome] || 0) + 1;
+  }
+  const nomesObras = Object.keys(contagem).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+  return (
+    <div style={{maxWidth:560, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Selecione a obra</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>{nomesObras.length} obra(s) com máquinas</p>
+        </div>
+      </div>
+
+      <div style={{display:'flex', flexDirection:'column', gap:10}}>
+        {nomesObras.map(nome => (
+          <button key={nome} onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${COR.borda}`, borderRadius:14, padding:'16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+            <div style={{width:42, height:42, borderRadius:11, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+              <Building size={22} color={COR.azul}/>
+            </div>
+            <div style={{flex:1, minWidth:0}}>
+              <div style={{fontSize:15.5, fontWeight:700, color:COR.texto}}>{nome}</div>
+              <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>{contagem[nome]} máquina(s)</div>
+            </div>
+            <ChevronRight size={20} color={COR.cinza}/>
+          </button>
+        ))}
+        {nomesObras.length === 0 && <p style={{textAlign:'center', color:COR.cinza, padding:'30px 0'}}>Nenhuma máquina ativa cadastrada.</p>}
+      </div>
+    </div>
+  );
+}
+
+// --- Operador: passo 2, escolher a MÁQUINA (da obra selecionada) ---
+function OperadorSelecionaMaquina({ maquinas, obra, ultimoStatus, onEscolher, onVoltar }) {
+  const [busca, setBusca] = useState('');
+  const ativas = maquinas.filter(m => m.ativa && (m.obra || 'Sem obra') === obra);
+  const filtradas = ativas.filter(m => {
+    if (!busca.trim()) return true;
+    const q = busca.toLowerCase();
+    return `${m.codigo} ${m.descricao} ${m.obra}`.toLowerCase().includes(q);
+  });
+
+  return (
+    <div style={{maxWidth:560, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Selecione a máquina</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5, display:'flex', alignItems:'center', gap:5}}><Building size={13}/> {obra} · {ativas.length} máquina(s)</p>
+        </div>
+      </div>
+
+      <div style={{position:'relative', marginBottom:16}}>
+        <Search size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+        <input value={busca} placeholder="Buscar máquina…" style={{...S.campo, paddingLeft:42}} onChange={e => setBusca(e.target.value)}/>
+      </div>
+
+      <div style={{display:'flex', flexDirection:'column', gap:10}}>
+        {filtradas.map(m => {
+          const parada = ultimoStatus[m.id] === 'nao_funcional';
+          return (
+            <button key={m.id} onClick={() => onEscolher(m)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${COR.borda}`, borderRadius:14, padding:'15px 16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+              <div style={{width:42, height:42, borderRadius:11, background: parada ? COR.vermelhoBg : '#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                <Factory size={22} color={parada ? COR.vermelho : COR.azul}/>
+              </div>
+              <div style={{flex:1, minWidth:0}}>
+                <div style={{display:'flex', alignItems:'center', gap:7}}>
+                  {m.codigo && <span style={{fontSize:12, fontWeight:800, color:COR.azulCl}}>{m.codigo}</span>}
+                  <span style={{fontSize:15.5, fontWeight:700, color:COR.texto}}>{m.descricao}</span>
+                </div>
+                <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>{m.obra || 'Sem obra'}</div>
+              </div>
+              {parada
+                ? <Badge cor={COR.vermelho} bg={COR.vermelhoBg}><AlertTriangle size={11}/> Parada</Badge>
+                : <ChevronRight size={20} color={COR.cinza}/>}
+            </button>
+          );
+        })}
+        {filtradas.length === 0 && <p style={{textAlign:'center', color:COR.cinza, padding:'30px 0'}}>Nenhuma máquina encontrada.</p>}
+      </div>
+    </div>
+  );
+}
+
+// --- Operador: passo 2, registrar status ---
+function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, onVoltar, salvando }) {
+  // paradaAberta = registro de não-funcional em aberto (ou null)
+  const [operador, setOperador] = useState('');
+  const [status, setStatus] = useState(null);     // 'funcional' | 'nao_funcional'
+  const [horimetro, setHorimetro] = useState('');
+  const [na, setNA] = useState(false);
+  const [motivo, setMotivo] = useState('');
+  const [obs, setObs] = useState('');
+  const [foto, setFoto] = useState(null);
+  const [fotoPreview, setFotoPreview] = useState('');
+  const [erro, setErro] = useState('');
+  // checklist: { [item]: { status:'ok'|'nok'|null, obs:'' } }
+  const [check, setCheck] = useState({});
+  // fotos extras: [{ file, preview }]
+  const [extras, setExtras] = useState([]);
+
+  const temHorimetro = maquina.possuiHorimetro;
+  const exigeFoto = status === 'funcional' && temHorimetro && !na;
+
+  async function escolherFoto(e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const comp = await comprimirImagem(f);
+    setFoto(comp);
+    setFotoPreview(URL.createObjectURL(comp));
+  }
+
+  async function addExtras(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const comps = [];
+    for (const f of files) { const c = await comprimirImagem(f); comps.push({ file: c, preview: URL.createObjectURL(c) }); }
+    setExtras(prev => [...prev, ...comps]);
+    e.target.value = '';
+  }
+  function removerExtra(idx) {
+    setExtras(prev => prev.filter((_, i) => i !== idx));
+  }
+
+  function setItem(item, campo, valor) {
+    setCheck(prev => ({ ...prev, [item]: { ...(prev[item] || { status:null, obs:'' }), [campo]: valor } }));
+  }
+
+  function validarEConfirmar() {
+    setErro('');
+    if (!operador.trim()) { setErro('Informe seu nome.'); return; }
+    if (!status) { setErro('Selecione o status da máquina.'); return; }
+    if (status === 'funcional') {
+      if (temHorimetro && !na) {
+        if (horimetro === '' || isNaN(Number(horimetro))) { setErro('Informe o horímetro atual (ou marque "Não Aplicável").'); return; }
+        if (!foto) { setErro('A foto do painel é obrigatória para validar o horímetro.'); return; }
+      }
+    } else { // nao_funcional
+      if (!motivo) { setErro('Selecione o motivo da parada.'); return; }
+    }
+    // monta o checklist final (só itens respondidos)
+    const checklist = (checklistItens || []).map(item => ({
+      item,
+      status: (check[item] && check[item].status) || null,
+      obs: (check[item] && check[item].obs) || '',
+    }));
+    onConfirmar({
+      operador: operador.trim(),
+      status,
+      horimetro: (status === 'funcional' && temHorimetro && !na) ? Number(horimetro) : null,
+      horimetroNA: status === 'funcional' && temHorimetro ? na : false,
+      motivo: status === 'nao_funcional' ? motivo : '',
+      observacao: obs.trim(),
+      foto,
+      checklist,
+      fotosExtras: extras.map(x => x.file),
+    });
+  }
+
+  return (
+    <div style={{maxWidth:560, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:20, fontWeight:800, color:COR.azul}}>{maquina.codigo ? maquina.codigo + ' · ' : ''}{maquina.descricao}</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>{maquina.obra || 'Sem obra'}</p>
+        </div>
+      </div>
+
+      {/* Aviso de parada em aberto */}
+      {paradaAberta && (
+        <div style={{background:COR.vermelhoBg, border:`1px solid #FECACA`, borderRadius:12, padding:'12px 14px', marginBottom:16, display:'flex', gap:10}}>
+          <AlertTriangle size={18} color={COR.vermelho} style={{flexShrink:0, marginTop:1}}/>
+          <div style={{fontSize:13.5, color:'#991B1B'}}>
+            Esta máquina está <b>parada</b> desde {dataHoraBR(paradaAberta.criadoEm)} ({paradaAberta.motivoParada}).
+            Ao registrar como <b>Funcional</b>, o sistema calcula o tempo de indisponibilidade.
+          </div>
+        </div>
+      )}
+
+      <div style={{...S.card, display:'flex', flexDirection:'column', gap:18}}>
+        {/* Nome do operador */}
+        <div>
+          <label style={S.rotulo}>Seu nome</label>
+          <div style={{position:'relative'}}>
+            <User size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+            <input value={operador} placeholder="Quem está registrando" style={{...S.campo, paddingLeft:42}} onChange={e => setOperador(e.target.value)}/>
+          </div>
+        </div>
+
+        {/* Status */}
+        <div>
+          <label style={S.rotulo}>Status da máquina</label>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+            <button onClick={() => setStatus('funcional')} style={{padding:'16px 12px', borderRadius:12, border:`2px solid ${status==='funcional'?COR.verde:COR.borda}`, background: status==='funcional'?COR.verdeBg:'#fff', cursor:'pointer', fontFamily:'inherit', display:'flex', flexDirection:'column', alignItems:'center', gap:6}}>
+              <CheckCircle2 size={26} color={status==='funcional'?COR.verde:COR.cinza}/>
+              <span style={{fontSize:15, fontWeight:700, color: status==='funcional'?COR.verde:COR.texto}}>Funcional</span>
+            </button>
+            <button onClick={() => setStatus('nao_funcional')} style={{padding:'16px 12px', borderRadius:12, border:`2px solid ${status==='nao_funcional'?COR.vermelho:COR.borda}`, background: status==='nao_funcional'?COR.vermelhoBg:'#fff', cursor:'pointer', fontFamily:'inherit', display:'flex', flexDirection:'column', alignItems:'center', gap:6}}>
+              <AlertTriangle size={26} color={status==='nao_funcional'?COR.vermelho:COR.cinza}/>
+              <span style={{fontSize:15, fontWeight:700, color: status==='nao_funcional'?COR.vermelho:COR.texto}}>Não Funcional</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Bloco Funcional */}
+        {status === 'funcional' && (
+          <>
+            {temHorimetro ? (
+              <div>
+                <label style={S.rotulo}>{unidadeMedidor(maquina)} atual</label>
+                <div style={{position:'relative', opacity: na ? .45 : 1}}>
+                  <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+                  <input type="number" inputMode="numeric" value={horimetro} disabled={na} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => setHorimetro(e.target.value)}/>
+                  <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{unidadeSufixo(maquina)}</span>
+                </div>
+                <label style={{display:'flex', alignItems:'center', gap:8, marginTop:10, cursor:'pointer', fontSize:14, color:COR.cinza, fontWeight:600}}>
+                  <input type="checkbox" checked={na} onChange={e => { setNA(e.target.checked); if (e.target.checked) { setHorimetro(''); setFoto(null); setFotoPreview(''); } }} style={{width:17, height:17}}/>
+                  Não Aplicável (sem {maquina.unidade==='km'?'hodômetro':'horímetro'})
+                </label>
+              </div>
+            ) : (
+              <div style={{background:'#F3F4F6', borderRadius:10, padding:'10px 13px', fontSize:13.5, color:COR.cinza}}>
+                Esta máquina está cadastrada <b>sem {maquina.unidade==='km'?'hodômetro':'horímetro'}</b> — não é necessário informar leitura nem foto.
+              </div>
+            )}
+
+            {/* Foto do painel (obrigatória se tem horímetro e não é NA) */}
+            {exigeFoto && (
+              <div>
+                <label style={S.rotulo}>Foto do painel <span style={{color:COR.vermelho}}>*</span></label>
+                {fotoPreview ? (
+                  <div style={{position:'relative', borderRadius:12, overflow:'hidden', border:`1px solid ${COR.borda}`}}>
+                    <img src={fotoPreview} alt="painel" style={{width:'100%', maxHeight:240, objectFit:'cover', display:'block'}}/>
+                    <button onClick={() => { setFoto(null); setFotoPreview(''); }} style={{position:'absolute', top:8, right:8, background:'rgba(0,0,0,.6)', color:'#fff', border:'none', borderRadius:8, padding:'6px 10px', fontSize:12.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:5}}><X size={14}/> Trocar</button>
+                  </div>
+                ) : (
+                  <div style={{display:'flex', gap:10}}>
+                    <label style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:6, border:`2px dashed ${COR.borda}`, borderRadius:12, padding:'24px 12px', cursor:'pointer', color:COR.cinza}}>
+                      <Camera size={28} color={COR.azulCl}/>
+                      <span style={{fontSize:13.5, fontWeight:600}}>Tirar foto</span>
+                      <input type="file" accept="image/*" capture="environment" onChange={escolherFoto} style={{display:'none'}}/>
+                    </label>
+                    <label style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:6, border:`2px dashed ${COR.borda}`, borderRadius:12, padding:'24px 12px', cursor:'pointer', color:COR.cinza}}>
+                      <Plus size={28} color={COR.azulCl}/>
+                      <span style={{fontSize:13.5, fontWeight:600}}>Galeria</span>
+                      <input type="file" accept="image/*" onChange={escolherFoto} style={{display:'none'}}/>
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Bloco Não Funcional */}
+        {status === 'nao_funcional' && (
+          <div>
+            <label style={S.rotulo}>Motivo da parada</label>
+            <div style={{display:'flex', flexWrap:'wrap', gap:8}}>
+              {MOTIVOS_PARADA.map(mt => (
+                <button key={mt} onClick={() => setMotivo(mt)} style={{padding:'9px 15px', borderRadius:999, border:`1.5px solid ${motivo===mt?COR.vermelho:COR.borda}`, background: motivo===mt?COR.vermelhoBg:'#fff', color: motivo===mt?COR.vermelho:COR.texto, fontSize:14, fontWeight:600, cursor:'pointer', fontFamily:'inherit'}}>{mt}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Checklist de itens (sempre que escolheu status) */}
+        {status && (checklistItens || []).length > 0 && (
+          <div>
+            <div style={{height:1, background:COR.borda, margin:'2px 0 14px'}} />
+            <label style={S.rotulo}>Checklist de itens</label>
+            <div style={{display:'flex', flexDirection:'column', gap:8, marginTop:4}}>
+              {checklistItens.map((item, i) => {
+                const r = check[item] || { status:null, obs:'' };
+                return (
+                  <div key={i} style={{border:`1px solid ${COR.borda}`, borderRadius:11, padding:'10px 12px'}}>
+                    <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:10}}>
+                      <span style={{fontSize:14, fontWeight:600, color:COR.texto, flex:1}}>{item}</span>
+                      <div style={{display:'flex', gap:6, flexShrink:0}}>
+                        <button onClick={() => setItem(item, 'status', r.status==='ok'?null:'ok')} style={{padding:'6px 12px', borderRadius:8, border:`1.5px solid ${r.status==='ok'?COR.verde:COR.borda}`, background:r.status==='ok'?COR.verdeBg:'#fff', color:r.status==='ok'?COR.verde:COR.cinza, fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>OK</button>
+                        <button onClick={() => setItem(item, 'status', r.status==='nok'?null:'nok')} style={{padding:'6px 12px', borderRadius:8, border:`1.5px solid ${r.status==='nok'?COR.vermelho:COR.borda}`, background:r.status==='nok'?COR.vermelhoBg:'#fff', color:r.status==='nok'?COR.vermelho:COR.cinza, fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>Não OK</button>
+                      </div>
+                    </div>
+                    {r.status==='nok' && (
+                      <input value={r.obs} placeholder="O que há de errado? (opcional)" style={{...S.campo, padding:'8px 11px', fontSize:13.5, marginTop:8}} onChange={e => setItem(item, 'obs', e.target.value)} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Fotos extras (sempre que escolheu status) */}
+        {status && (
+          <div>
+            <label style={S.rotulo}>Fotos adicionais (opcional)</label>
+            <div style={{display:'flex', flexWrap:'wrap', gap:10}}>
+              {extras.map((x, i) => (
+                <div key={i} style={{position:'relative', width:88, height:88, borderRadius:10, overflow:'hidden', border:`1px solid ${COR.borda}`}}>
+                  <img src={x.preview} alt={'extra'+i} style={{width:'100%', height:'100%', objectFit:'cover'}}/>
+                  <button onClick={() => removerExtra(i)} style={{position:'absolute', top:3, right:3, background:'rgba(0,0,0,.6)', color:'#fff', border:'none', borderRadius:6, width:22, height:22, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center'}}><X size={13}/></button>
+                </div>
+              ))}
+              <label style={{width:88, height:88, borderRadius:10, border:`2px dashed ${COR.borda}`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, cursor:'pointer', color:COR.cinza}}>
+                <Camera size={22} color={COR.azulCl}/>
+                <span style={{fontSize:11, fontWeight:600}}>Tirar foto</span>
+                <input type="file" accept="image/*" capture="environment" onChange={addExtras} style={{display:'none'}}/>
+              </label>
+              <label style={{width:88, height:88, borderRadius:10, border:`2px dashed ${COR.borda}`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, cursor:'pointer', color:COR.cinza}}>
+                <Plus size={22} color={COR.azulCl}/>
+                <span style={{fontSize:11, fontWeight:600}}>Galeria</span>
+                <input type="file" accept="image/*" multiple onChange={addExtras} style={{display:'none'}}/>
+              </label>
+            </div>
+          </div>
+        )}
+
+        {/* Observação (opcional) */}
+        {status && (
+          <div>
+            <label style={S.rotulo}>Observação geral (opcional)</label>
+            <textarea value={obs} rows={2} placeholder="Algo a registrar…" style={{...S.campo, resize:'vertical'}} onChange={e => setObs(e.target.value)}/>
+          </div>
+        )}
+
+        {erro && <div style={{color:COR.vermelho, fontSize:13.5, fontWeight:600}}>{erro}</div>}
+
+        <button onClick={validarEConfirmar} disabled={salvando} style={{...S.botaoPrim, opacity: salvando?.7:1}}>
+          {salvando ? 'Enviando…' : <><CheckCircle2 size={18}/> Finalizar registro</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// --- Operador: tela de sucesso ---
+function OperadorSucesso({ info, onNovo, onSair }) {
+  const [gerando, setGerando] = useState(false);
+  async function baixarPdf() {
+    if (!info.registro || !info.maquinaObj) return;
+    setGerando(true);
+    try { await gerarPdfRegistro(info.registro, info.maquinaObj); }
+    catch (e) { console.error(e); alert('Não foi possível gerar o PDF.'); }
+    finally { setGerando(false); }
+  }
+  return (
+    <div style={{maxWidth:440, margin:'40px auto 0', textAlign:'center', padding:'0 16px'}}>
+      <div style={{width:80, height:80, borderRadius:'50%', background: info.offline ? COR.amareloBg : COR.verdeBg, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 18px'}}>
+        {info.offline ? <Clock size={44} color={COR.amarelo}/> : <CheckCircle2 size={44} color={COR.verde}/>}
+      </div>
+      <h2 style={{margin:'0 0 8px', fontSize:23, fontWeight:800, color:COR.texto}}>{info.offline ? 'Registro salvo!' : 'Registro enviado!'}</h2>
+      <p style={{margin:'0 0 6px', color:COR.cinza, fontSize:15}}>{info.maquina}</p>
+      {info.offline && (
+        <div style={{background:COR.amareloBg, border:'1px solid #FDE68A', borderRadius:12, padding:'12px 14px', margin:'12px 0', fontSize:13.5, color:'#92400E', lineHeight:1.5}}>
+          Você está <b>sem internet</b>. O registro foi guardado no aparelho e será <b>enviado automaticamente</b> quando você se conectar. Pode continuar registrando normalmente.
+        </div>
+      )}
+      {info.indisponivelMinutos != null && (
+        <div style={{background:COR.amareloBg, border:'1px solid #FDE68A', borderRadius:12, padding:'12px 14px', margin:'16px 0', fontSize:14, color:'#92400E', display:'inline-flex', alignItems:'center', gap:8}}>
+          <Clock size={16}/> Tempo de indisponibilidade: <b>{formatarDuracao(info.indisponivelMinutos)}</b>
+        </div>
+      )}
+      <div style={{display:'flex', flexDirection:'column', gap:10, marginTop:22}}>
+        {info.registro && <button onClick={baixarPdf} disabled={gerando} style={{...S.botaoPrim, opacity:gerando?.7:1}}><Download size={18}/> {gerando ? 'Gerando PDF…' : 'Baixar PDF do registro'}</button>}
+        <button onClick={onNovo} style={S.botaoSec}><Plus size={18}/> Registrar outra máquina</button>
+        <button onClick={onSair} style={{...S.botaoSec, border:'none'}}>Sair</button>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// ADMIN: RELATÓRIOS (período + resumo + PDF)
+// ============================================================
+function TelaRelatorios({ registros, maquinas, onVoltar }) {
+  const hoje = new Date().toISOString().slice(0,10);
+  const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+  const [ini, setIni] = useState(mesPassado);
+  const [fim, setFim] = useState(hoje);
+  const [fObra, setFObra] = useState('todas');
+  const [fMaquina, setFMaquina] = useState('todas');
+  const [fEmpresa, setFEmpresa] = useState('todas');
+
+  const obras = Array.from(new Set(maquinas.map(m => m.obra).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  // lista de empresas (Axial + locadoras cadastradas)
+  const empresas = Array.from(new Set(maquinas.map(empresaDaMaquina).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  // máquinas disponíveis no seletor (respeitam obra e empresa escolhidas)
+  const maquinasDoFiltro = maquinas.filter(m =>
+    (fObra === 'todas' || m.obra === fObra) &&
+    (fEmpresa === 'todas' || empresaDaMaquina(m) === fEmpresa)
+  );
+
+  // aplica os filtros ao conjunto de máquinas considerado
+  const maquinasFiltradas = maquinas.filter(m => {
+    if (fObra !== 'todas' && m.obra !== fObra) return false;
+    if (fEmpresa !== 'todas' && empresaDaMaquina(m) !== fEmpresa) return false;
+    if (fMaquina !== 'todas' && m.id !== fMaquina) return false;
+    return true;
+  });
+  const idsFiltrados = new Set(maquinasFiltradas.map(m => m.id));
+  const registrosFiltrados = registros.filter(r => idsFiltrados.has(r.maquinaId));
+
+  const resumo = calcularResumoPeriodo(registrosFiltrados, maquinasFiltradas, ini, fim);
+  const faltas = diasSemRegistro(registrosFiltrados, maquinasFiltradas, ini, fim);
+  const totalAtivas = maquinas.filter(m => m.ativa).length;
+  const registrosPeriodo = registrosFiltrados.filter(r => {
+    const t = new Date(r.criadoEm).getTime();
+    const a = ini ? new Date(ini+'T00:00:00').getTime() : -Infinity;
+    const b = fim ? new Date(fim+'T23:59:59').getTime() : Infinity;
+    return t >= a && t <= b;
+  });
+
+  return (
+    <div style={{maxWidth:820, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Relatórios</h2>
+        <span style={{marginLeft:'auto', fontSize:13.5, fontWeight:700, color:COR.azul, background:'#EFF6FF', padding:'6px 14px', borderRadius:999, display:'flex', alignItems:'center', gap:6}}><Factory size={15}/> {totalAtivas} máquinas ativas</span>
+      </div>
+
+      <div style={{...S.card, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
+        <div>
+          <label style={S.rotulo}>De</label>
+          <input type="date" value={ini} style={{...S.campo, width:'auto'}} onChange={e => setIni(e.target.value)}/>
+        </div>
+        <div>
+          <label style={S.rotulo}>Até</label>
+          <input type="date" value={fim} style={{...S.campo, width:'auto'}} onChange={e => setFim(e.target.value)}/>
+        </div>
+        <div>
+          <label style={S.rotulo}>Obra</label>
+          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFObra(e.target.value); setFMaquina('todas'); }}>
+            <option value="todas">Todas as obras</option>
+            {obras.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.rotulo}>Empresa</label>
+          <select value={fEmpresa} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFEmpresa(e.target.value); setFMaquina('todas'); }}>
+            <option value="todas">Todas as empresas</option>
+            {empresas.map(emp => <option key={emp} value={emp}>{emp}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.rotulo}>Máquina</label>
+          <select value={fMaquina} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFMaquina(e.target.value)}>
+            <option value="todas">Todas as máquinas</option>
+            {maquinasDoFiltro.map(m => <option key={m.id} value={m.id}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</option>)}
+          </select>
+        </div>
+        <button onClick={() => gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim)} disabled={!resumo.length} style={{...S.botaoPrim, opacity: resumo.length?1:.5, marginLeft:'auto'}}>
+          <Download size={18}/> Baixar PDF do período
+        </button>
+      </div>
+
+      {resumo.length === 0 ? (
+        <div style={{textAlign:'center', padding:'48px 20px', color:COR.cinza}}>
+          <FileText size={40} color={COR.borda}/>
+          <p style={{marginTop:12, fontWeight:600}}>Nenhum registro neste período.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:12}}>
+          {resumo.map(r => (
+            <div key={r.maquina.id} style={{...S.card, padding:'12px 14px'}}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, marginBottom:8}}>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:14.5, fontWeight:800, color:COR.texto}}>{r.maquina.codigo ? r.maquina.codigo+' · ' : ''}{r.maquina.descricao}</div>
+                  <div style={{fontSize:12, color:COR.cinza, marginTop:1}}>{r.maquina.obra || 'Sem obra'}</div>
+                  <div style={{fontSize:12, color: r.maquina.tipo==='prestador'?'#7C3AED':COR.azulCl, marginTop:1, fontWeight:600}}>{empresaDaMaquina(r.maquina)}</div>
+                </div>
+                {r.disponibilidade != null && (
+                  <Badge cor={r.disponibilidade>=80?COR.verde:(r.disponibilidade>=50?COR.amarelo:COR.vermelho)} bg={r.disponibilidade>=80?COR.verdeBg:(r.disponibilidade>=50?COR.amareloBg:COR.vermelhoBg)}>
+                    <BarChart3 size={12}/> {r.disponibilidade}%
+                  </Badge>
+                )}
+              </div>
+              <div style={{display:'flex', flexWrap:'wrap', gap:'4px 18px', fontSize:13}}>
+                <span><b style={{color:COR.verde}}>{r.diasFuncionando}</b> <span style={{color:COR.cinza}}>dias func.</span></span>
+                <span><b style={{color:COR.vermelho}}>{r.diasParado}</b> <span style={{color:COR.cinza}}>dias parado</span></span>
+                {r.maquina.possuiHorimetro && <span><b style={{color:COR.azul}}>{r.horasTrabalhadas}{unidadeSufixo(r.maquina)}</b> <span style={{color:COR.cinza}}>{r.maquina.unidade==='km'?'rodados':'trabalhadas'}</span></span>}
+                <span><b style={{color:COR.amarelo}}>{formatarDuracao(r.paradoMin || 0)}</b> <span style={{color:COR.cinza}}>parado</span></span>
+              </div>
+              {Object.keys(r.motivos).length > 0 && (
+                <div style={{marginTop:7, fontSize:12.5, color:COR.cinza}}>
+                  <b style={{color:COR.texto}}>Motivos:</b> {Object.entries(r.motivos).map(([m,c]) => `${m} (${c})`).join(', ')}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {faltas.length > 0 && (
+        <div style={{...S.card, marginTop:18, padding:0, overflow:'hidden'}}>
+          <div style={{display:'flex', alignItems:'center', gap:9, padding:'13px 16px', borderBottom:`1px solid ${COR.borda}`, background:COR.vermelhoBg}}>
+            <AlertTriangle size={18} color={COR.vermelho}/>
+            <span style={{fontSize:15, fontWeight:800, color:'#991B1B'}}>Checks não realizados</span>
+            <span style={{marginLeft:'auto', fontSize:12.5, color:'#991B1B'}}>no período selecionado</span>
+          </div>
+          <div style={{display:'flex', flexDirection:'column'}}>
+            {faltas.map(({ maquina, faltantes, totalDias }) => (
+              <div key={maquina.id} style={{padding:'11px 16px', borderBottom:`1px solid ${COR.bg}`}}>
+                <div style={{display:'flex', justifyContent:'space-between', gap:10, alignItems:'baseline'}}>
+                  <span style={{fontSize:14.5, fontWeight:700, color:COR.texto}}>{maquina.codigo ? maquina.codigo+' · ' : ''}{maquina.descricao}</span>
+                  <span style={{fontSize:12.5, fontWeight:700, color:COR.vermelho, whiteSpace:'nowrap'}}>{faltantes.length} de {totalDias} dias sem check</span>
+                </div>
+                <div style={{fontSize:12, color:COR.cinza, marginTop:2, display:'flex', alignItems:'center', gap:5, flexWrap:'wrap'}}>
+                  <Building size={12}/> {maquina.obra || 'Sem obra'}
+                  <span style={{color: maquina.tipo==='prestador'?'#7C3AED':COR.azulCl, fontWeight:600}}>· {empresaDaMaquina(maquina)}</span>
+                </div>
+                <div style={{fontSize:11.5, color:COR.cinza, marginTop:3}}>
+                  {faltantes.slice(0,10).map(d => d.split('-').reverse().slice(0,2).join('/')).join(', ')}{faltantes.length > 10 ? '…' : ''}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <p style={{fontSize:12, color:COR.cinza, marginTop:16, lineHeight:1.5}}>
+        Os números refletem os dias em que houve registro do operador. Como o check é feito no início do dia, o trabalho entre duas leituras é creditado no dia anterior. Dias sem nenhum registro não entram na conta de funcionando nem parado.
+      </p>
+    </div>
+  );
+}
+
+function Metrica({ rotulo, valor, cor }) {
+  return (
+    <div style={{background:'#F8FAFC', borderRadius:10, padding:'10px 12px'}}>
+      <div style={{fontSize:20, fontWeight:800, color:cor}}>{valor}</div>
+      <div style={{fontSize:11.5, color:COR.cinza, fontWeight:600, marginTop:2}}>{rotulo}</div>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN: CONFIGURAÇÃO DO CHECKLIST
+// ============================================================
+function ConfigChecklist({ itens, onSalvar, onFechar }) {
+  const [lista, setLista] = useState(itens && itens.length ? [...itens] : []);
+  const [novo, setNovo] = useState('');
+
+  function add() { if (novo.trim()) { setLista([...lista, novo.trim()]); setNovo(''); } }
+  function remover(i) { setLista(lista.filter((_, idx) => idx !== i)); }
+  function mover(i, dir) {
+    const j = i + dir; if (j < 0 || j >= lista.length) return;
+    const nova = [...lista]; [nova[i], nova[j]] = [nova[j], nova[i]]; setLista(nova);
+  }
+
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.45)', zIndex:500, display:'flex', alignItems:'flex-end', justifyContent:'center'}} onClick={onFechar}>
+      <div onClick={e => e.stopPropagation()} style={{background:'#fff', width:'100%', maxWidth:560, borderRadius:'18px 18px 0 0', padding:20, maxHeight:'85vh', overflow:'auto'}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16}}>
+          <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul, display:'flex', alignItems:'center', gap:8}}><List size={20}/> Itens do checklist</h3>
+          <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:8}}><X size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', gap:8, marginBottom:16}}>
+          <input value={novo} placeholder="Novo item de checklist" style={S.campo} onChange={e => setNovo(e.target.value)} onKeyDown={e => e.key==='Enter' && add()}/>
+          <button onClick={add} style={{...S.botaoPrim, padding:'11px 16px'}}><Plus size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', flexDirection:'column', gap:8}}>
+          {lista.length === 0 && <p style={{color:COR.cinza, textAlign:'center', padding:'20px 0'}}>Nenhum item.</p>}
+          {lista.map((it, i) => (
+            <div key={i} style={{display:'flex', alignItems:'center', gap:8, padding:'10px 12px', border:`1px solid ${COR.borda}`, borderRadius:10}}>
+              <span style={{flex:1, fontWeight:600, color:COR.texto, fontSize:14}}>{it}</span>
+              <button onClick={() => mover(i,-1)} disabled={i===0} style={{...S.botaoSec, padding:'5px 9px', opacity:i===0?.3:1}}>↑</button>
+              <button onClick={() => mover(i,1)} disabled={i===lista.length-1} style={{...S.botaoSec, padding:'5px 9px', opacity:i===lista.length-1?.3:1}}>↓</button>
+              <button onClick={() => remover(i)} style={{...S.botaoSec, padding:'5px 9px', color:COR.vermelho, borderColor:'#FECACA'}}><Trash2 size={15}/></button>
+            </div>
+          ))}
+        </div>
+
+        <button onClick={() => onSalvar(lista)} style={{...S.botaoPrim, width:'100%', marginTop:16}}><Save size={18}/> Salvar checklist</button>
+        <p style={{fontSize:12, color:COR.cinza, marginTop:12, lineHeight:1.5}}>
+          Estes itens são o checklist <b>padrão</b>, usado por máquinas que não têm um checklist próprio. Vale para todos os dispositivos.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN: CHECKLIST POR MÁQUINA (tela separada)
+// ============================================================
+function TelaChecklistMaquinas({ maquinas, padrao, onSalvarMaquina, onVoltar }) {
+  const [sel, setSel] = useState(null);        // máquina selecionada
+  const [lista, setLista] = useState([]);
+  const [novo, setNovo] = useState('');
+  const [proprio, setProprio] = useState(false); // true = customizado; false = usando padrão
+  const [salvando, setSalvando] = useState(false);
+
+  function escolher(m) {
+    setSel(m);
+    const temProprio = Array.isArray(m.checklistProprio) && m.checklistProprio.length > 0;
+    setProprio(temProprio);
+    setLista(temProprio ? [...m.checklistProprio] : [...(padrao || [])]);
+    setNovo('');
+  }
+  function add() { if (novo.trim()) { setLista([...lista, novo.trim()]); setNovo(''); setProprio(true); } }
+  function remover(i) { setLista(lista.filter((_, idx) => idx !== i)); setProprio(true); }
+  function mover(i, dir) {
+    const j = i + dir; if (j < 0 || j >= lista.length) return;
+    const nova = [...lista]; [nova[i], nova[j]] = [nova[j], nova[i]]; setLista(nova); setProprio(true);
+  }
+  function restaurarPadrao() {
+    setLista([...(padrao || [])]); setProprio(false);
+  }
+  async function salvar() {
+    if (!sel) return;
+    setSalvando(true);
+    // se "proprio" = false, grava null (volta a usar o padrão); senão grava a lista
+    await onSalvarMaquina(sel, proprio ? lista : null);
+    setSalvando(false);
+    setSel(null);
+  }
+
+  // lista de seleção de máquina
+  if (!sel) {
+    const ativas = maquinas.filter(m => m.ativa);
+    return (
+      <div style={{maxWidth:760, margin:'0 auto'}}>
+        <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+          <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Checklist por máquina</h2>
+        </div>
+        <p style={{fontSize:13.5, color:COR.cinza, margin:'0 0 16px'}}>Escolha uma máquina para personalizar o checklist dela. Quem não for personalizada usa o checklist padrão.</p>
+        <div style={{display:'flex', flexDirection:'column', gap:10}}>
+          {ativas.map(m => {
+            const custom = Array.isArray(m.checklistProprio) && m.checklistProprio.length > 0;
+            return (
+              <button key={m.id} onClick={() => escolher(m)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${COR.borda}`, borderRadius:14, padding:'14px 16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+                <div style={{width:40, height:40, borderRadius:10, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><Factory size={20} color={COR.azul}/></div>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontSize:15, fontWeight:700, color:COR.texto}}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</div>
+                  <div style={{fontSize:12.5, color:COR.cinza, marginTop:1}}>{m.obra || 'Sem obra'}</div>
+                </div>
+                {custom
+                  ? <Badge cor={COR.azul} bg="#EFF6FF"><List size={11}/> Personalizado</Badge>
+                  : <Badge cor={COR.cinza} bg="#F3F4F6">Padrão</Badge>}
+                <ChevronRight size={18} color={COR.cinza}/>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // edição do checklist da máquina escolhida
+  return (
+    <div style={{maxWidth:620, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:8}}>
+        <button onClick={() => setSel(null)} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:19, fontWeight:800, color:COR.azul}}>{sel.codigo ? sel.codigo+' · ' : ''}{sel.descricao}</h2>
+          <p style={{margin:'2px 0 0', fontSize:13, color:COR.cinza}}>{proprio ? 'Checklist personalizado' : 'Usando o checklist padrão'}</p>
+        </div>
+      </div>
+
+      <div style={{...S.card, marginTop:12}}>
+        <div style={{display:'flex', gap:8, marginBottom:16}}>
+          <input value={novo} placeholder="Adicionar item ao checklist" style={S.campo} onChange={e => setNovo(e.target.value)} onKeyDown={e => e.key==='Enter' && add()}/>
+          <button onClick={add} style={{...S.botaoPrim, padding:'11px 16px'}}><Plus size={18}/></button>
+        </div>
+
+        <div style={{display:'flex', flexDirection:'column', gap:8}}>
+          {lista.length === 0 && <p style={{color:COR.cinza, textAlign:'center', padding:'20px 0'}}>Nenhum item.</p>}
+          {lista.map((it, i) => (
+            <div key={i} style={{display:'flex', alignItems:'center', gap:8, padding:'10px 12px', border:`1px solid ${COR.borda}`, borderRadius:10}}>
+              <span style={{flex:1, fontWeight:600, color:COR.texto, fontSize:14}}>{it}</span>
+              <button onClick={() => mover(i,-1)} disabled={i===0} style={{...S.botaoSec, padding:'5px 9px', opacity:i===0?.3:1}}>↑</button>
+              <button onClick={() => mover(i,1)} disabled={i===lista.length-1} style={{...S.botaoSec, padding:'5px 9px', opacity:i===lista.length-1?.3:1}}>↓</button>
+              <button onClick={() => remover(i)} style={{...S.botaoSec, padding:'5px 9px', color:COR.vermelho, borderColor:'#FECACA'}}><Trash2 size={15}/></button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{display:'flex', gap:10, marginTop:16, flexWrap:'wrap'}}>
+          <button onClick={salvar} disabled={salvando} style={{...S.botaoPrim, flex:1, opacity:salvando?.7:1}}><Save size={18}/> {salvando?'Salvando…':'Salvar'}</button>
+          {proprio && <button onClick={restaurarPadrao} style={S.botaoSec}>Voltar ao padrão</button>}
+        </div>
+        <p style={{fontSize:12, color:COR.cinza, marginTop:12, lineHeight:1.5}}>
+          {proprio
+            ? 'Esta máquina terá um checklist próprio. "Voltar ao padrão" faz ela seguir o checklist padrão global novamente.'
+            : 'Esta máquina segue o checklist padrão. Ao adicionar ou remover itens, ela passa a ter um checklist próprio.'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
+// ============================================================
+// ADMIN: CARD DE REVISÃO (reutilizável)
+// ============================================================
+function CardRevisao({ maquinas, compacto }) {
+  const lista = maquinasParaRevisao(maquinas);
+  if (lista.length === 0) {
+    return (
+      <div style={{...S.card, display:'flex', alignItems:'center', gap:10}}>
+        <CheckCircle2 size={20} color={COR.verde}/>
+        <span style={{fontSize:14, color:COR.texto, fontWeight:600}}>Nenhuma máquina pendente de revisão.</span>
+      </div>
+    );
+  }
+  return (
+    <div style={{...S.card, padding:0, overflow:'hidden'}}>
+      <div style={{display:'flex', alignItems:'center', gap:9, padding:'13px 16px', borderBottom:`1px solid ${COR.borda}`, background:'#FFFBEB'}}>
+        <Wrench size={18} color={COR.amarelo}/>
+        <span style={{fontSize:15, fontWeight:800, color:'#92400E'}}>Revisões pendentes</span>
+        <span style={{marginLeft:'auto', fontSize:12.5, fontWeight:700, color:'#92400E', background:'#FDE68A', padding:'2px 9px', borderRadius:999}}>{lista.length}</span>
+      </div>
+      <div style={{display:'flex', flexDirection:'column'}}>
+        {lista.map(({ m, mn }) => (
+          <div key={m.id} style={{display:'flex', alignItems:'center', gap:10, padding:'11px 16px', borderBottom:`1px solid ${COR.bg}`}}>
+            <div style={{flex:1, minWidth:0}}>
+              <div style={{fontSize:14.5, fontWeight:700, color:COR.texto}}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</div>
+              {!compacto && <div style={{fontSize:12, color:COR.cinza, marginTop:1}}>{m.obra || 'Sem obra'} · {Math.round(m.horimetroAtual)}{unidadeSufixo(m)}</div>}
+            </div>
+            {mn.vencido
+              ? <Badge cor={COR.vermelho} bg={COR.vermelhoBg}><AlertTriangle size={11}/> Vencida</Badge>
+              : <Badge cor={COR.amarelo} bg={COR.amareloBg}><Clock size={11}/> Faltam {mn.restante}{unidadeSufixo(m)}</Badge>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN: TELA DE REGISTROS (checklists recebidos)
+// ============================================================
+function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
+  const hoje = new Date().toISOString().slice(0,10);
+  const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+  const [ini, setIni] = useState(mesPassado);
+  const [fim, setFim] = useState(hoje);
+  const [expandido, setExpandido] = useState(null);
+  const [mostrarExcluir, setMostrarExcluir] = useState(false);
+  const [senha, setSenha] = useState('');
+  const [erroSenha, setErroSenha] = useState('');
+  const [excluindo, setExcluindo] = useState(false);
+  const [fObra, setFObra] = useState('todas');
+
+  // obras presentes nos registros
+  const obrasNosRegistros = Array.from(new Set(registros.map(r => r.obra).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+
+  const noPeriodo = registros.filter(r => {
+    const t = new Date(r.criadoEm).getTime();
+    const a = ini ? new Date(ini+'T00:00:00').getTime() : -Infinity;
+    const b = fim ? new Date(fim+'T23:59:59').getTime() : Infinity;
+    if (t < a || t > b) return false;
+    if (fObra !== 'todas' && r.obra !== fObra) return false;
+    return true;
+  });
+
+  const mapaMaquinas = {};
+  for (const m of maquinas) mapaMaquinas[m.id] = m;
+
+  async function confirmarExclusao() {
+    setErroSenha('');
+    if (senha !== SENHA_ADMIN) { setErroSenha('Senha incorreta.'); return; }
+    setExcluindo(true);
+    try {
+      const r = await onExcluirPeriodo(ini, fim, fObra);
+      setMostrarExcluir(false); setSenha('');
+      alert(`${r.apagados} registro(s) excluído(s) e fotos removidas.`);
+    } catch (e) {
+      setErroSenha('Erro ao excluir. Tente novamente.');
+    } finally { setExcluindo(false); }
+  }
+
+  return (
+    <div style={{maxWidth:820, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Registros recebidos</h2>
+      </div>
+
+      {/* Revisões pendentes */}
+      <div style={{marginBottom:18}}><CardRevisao maquinas={maquinas} /></div>
+
+      {/* Filtro de período */}
+      <div style={{...S.card, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
+        <div>
+          <label style={S.rotulo}>De</label>
+          <input type="date" value={ini} style={{...S.campo, width:'auto'}} onChange={e => setIni(e.target.value)}/>
+        </div>
+        <div>
+          <label style={S.rotulo}>Até</label>
+          <input type="date" value={fim} style={{...S.campo, width:'auto'}} onChange={e => setFim(e.target.value)}/>
+        </div>
+        <div>
+          <label style={S.rotulo}>Obra</label>
+          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFObra(e.target.value)}>
+            <option value="todas">Todas as obras</option>
+            {obrasNosRegistros.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <span style={{fontSize:13.5, color:COR.cinza, fontWeight:600, alignSelf:'center'}}>{noPeriodo.length} registro(s)</span>
+      </div>
+
+      {/* Ações do período */}
+      <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:18}}>
+        <button onClick={() => gerarPdfTodosRegistros(noPeriodo, ini, fim, maquinas)} disabled={noPeriodo.length===0} style={{...S.botaoPrim, opacity:noPeriodo.length?1:.5}}>
+          <Download size={18}/> Baixar todos os checklists
+        </button>
+        <button onClick={() => setMostrarExcluir(true)} disabled={noPeriodo.length===0} style={{...S.botaoSec, color:COR.vermelho, borderColor:'#FECACA', opacity:noPeriodo.length?1:.5, marginLeft:'auto'}}>
+          <Trash2 size={17}/> Excluir período
+        </button>
+      </div>
+
+      {/* Lista de registros */}
+      {noPeriodo.length === 0 ? (
+        <div style={{textAlign:'center', padding:'48px 20px', color:COR.cinza}}>
+          <FileText size={40} color={COR.borda}/>
+          <p style={{marginTop:12, fontWeight:600}}>Nenhum registro neste período.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:10}}>
+          {noPeriodo.map(r => {
+            const aberto = expandido === r.id;
+            const func = r.status === 'funcional';
+            const nokCount = (r.checklist || []).filter(c => c.status === 'nok').length;
+            return (
+              <div key={r.id} style={{...S.card, padding:0, overflow:'hidden'}}>
+                <div onClick={() => setExpandido(aberto ? null : r.id)} style={{display:'flex', alignItems:'center', gap:12, padding:'13px 16px', cursor:'pointer'}}>
+                  <div style={{width:40, height:40, borderRadius:10, background: func?COR.verdeBg:COR.vermelhoBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                    {func ? <CheckCircle2 size={20} color={COR.verde}/> : <AlertTriangle size={20} color={COR.vermelho}/>}
+                  </div>
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontSize:15, fontWeight:700, color:COR.texto}}>{r.maquinaCodigo ? r.maquinaCodigo+' · ' : ''}{r.maquinaDescricao}</div>
+                    <div style={{fontSize:12.5, color:COR.cinza, marginTop:1}}>{dataHoraBR(r.criadoEm)} · {r.operador || 'sem nome'}</div>
+                  </div>
+                  <div style={{display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end'}}>
+                    {func
+                      ? <Badge cor={COR.verde} bg={COR.verdeBg}>Funcional</Badge>
+                      : <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>{r.motivoParada || 'Parada'}</Badge>}
+                    {r.validacaoStatus === 'validada'
+                      ? <Badge cor={COR.verde} bg={COR.verdeBg}><CheckCircle2 size={10}/> Validada</Badge>
+                      : r.validacaoStatus === 'invalidada'
+                        ? <Badge cor={COR.vermelho} bg={COR.vermelhoBg}><X size={10}/> Invalidada</Badge>
+                        : <Badge cor={COR.cinza} bg="#F3F4F6"><Clock size={10}/> Pendente</Badge>}
+                    {nokCount > 0 && <span style={{fontSize:11.5, color:COR.vermelho, fontWeight:700}}>{nokCount} item(ns) não OK</span>}
+                  </div>
+                  <ChevronDown size={18} color={COR.cinza} style={{transform: aberto?'rotate(180deg)':'none', transition:'transform .15s', flexShrink:0}}/>
+                </div>
+
+                {aberto && (
+                  <div style={{borderTop:`1px solid ${COR.borda}`, padding:'14px 16px', background:'#FAFBFC'}}>
+                    {r.validacaoStatus !== 'pendente' && (
+                      <div style={{marginBottom:12, padding:'10px 12px', borderRadius:10, background: r.validacaoStatus==='validada'?COR.verdeBg:COR.vermelhoBg, fontSize:13}}>
+                        <div style={{fontWeight:700, color: r.validacaoStatus==='validada'?'#166534':'#991B1B', display:'flex', alignItems:'center', gap:6}}>
+                          {r.validacaoStatus==='validada' ? <CheckCircle2 size={14}/> : <X size={14}/>}
+                          {r.validacaoStatus==='validada' ? 'Validada' : 'Invalidada'}
+                          {r.validacaoPor ? ` por ${r.validacaoPor}` : ''}
+                          {r.validacaoEm ? ` · ${dataHoraBR(r.validacaoEm)}` : ''}
+                        </div>
+                        {r.validacaoStatus==='invalidada' && r.validacaoMotivo && (
+                          <div style={{marginTop:4, color:'#7F1D1D'}}><b>Motivo:</b> {r.validacaoMotivo}</div>
+                        )}
+                      </div>
+                    )}
+                    <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(140px,1fr))', gap:8, marginBottom:12, fontSize:13}}>
+                      {func && <div><b>{unidadeMedidor(mapaMaquinas[r.maquinaId])}:</b> {r.horimetroNA ? 'N/A' : (r.horimetro!=null ? r.horimetro+unidadeSufixo(mapaMaquinas[r.maquinaId]) : '—')}</div>}
+                      <div><b>Obra:</b> {r.obra || '—'}</div>
+                      {r.indisponivelMinutos != null && <div><b>Indisponibilidade:</b> {formatarDuracao(r.indisponivelMinutos)}</div>}
+                    </div>
+                    {(r.checklist || []).filter(c => c.status).length > 0 && (
+                      <div style={{marginBottom:12}}>
+                        <div style={{fontSize:12.5, fontWeight:700, color:COR.cinza, marginBottom:6, textTransform:'uppercase'}}>Checklist</div>
+                        <div style={{display:'flex', flexDirection:'column', gap:5}}>
+                          {r.checklist.filter(c => c.status).map((c, i) => (
+                            <div key={i} style={{display:'flex', alignItems:'center', gap:8, fontSize:13.5}}>
+                              <span style={{fontWeight:700, color: c.status==='ok'?COR.verde:COR.vermelho, fontSize:12, minWidth:58}}>{c.status==='ok'?'OK':'NÃO OK'}</span>
+                              <span style={{color:COR.texto}}>{c.item}</span>
+                              {c.obs && <span style={{color:COR.cinza, fontStyle:'italic'}}>— {c.obs}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {r.observacao && <div style={{fontSize:13.5, marginBottom:12}}><b>Observação:</b> {r.observacao}</div>}
+                    {((r.fotoUrl ? 1 : 0) + (r.fotosExtras||[]).length) > 0 && (
+                      <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:12}}>
+                        {r.fotoUrl && <a href={r.fotoUrl} target="_blank" rel="noopener"><img src={r.fotoUrl} alt="painel" style={{width:70, height:70, objectFit:'cover', borderRadius:8, border:`1px solid ${COR.borda}`}}/></a>}
+                        {(r.fotosExtras||[]).map((u,i) => <a key={i} href={u} target="_blank" rel="noopener"><img src={u} alt={'f'+i} style={{width:70, height:70, objectFit:'cover', borderRadius:8, border:`1px solid ${COR.borda}`}}/></a>)}
+                      </div>
+                    )}
+                    <button onClick={() => gerarPdfRegistro(r, mapaMaquinas[r.maquinaId] || { codigo:r.maquinaCodigo, descricao:r.maquinaDescricao, obra:r.obra, possuiHorimetro:true, tipo:'axial' })} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5}}>
+                      <Download size={16}/> Baixar PDF deste registro
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Modal de exclusão com senha */}
+      {mostrarExcluir && (
+        <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.5)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:20}} onClick={() => !excluindo && setMostrarExcluir(false)}>
+          <div onClick={e => e.stopPropagation()} style={{background:'#fff', width:'100%', maxWidth:420, borderRadius:16, padding:22}}>
+            <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:12}}>
+              <div style={{width:44, height:44, borderRadius:11, background:COR.vermelhoBg, display:'flex', alignItems:'center', justifyContent:'center'}}><Trash2 size={22} color={COR.vermelho}/></div>
+              <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.texto}}>Excluir período</h3>
+            </div>
+            <p style={{fontSize:14, color:COR.cinza, lineHeight:1.5, margin:'0 0 16px'}}>
+              Isso vai apagar <b>{noPeriodo.length} registro(s)</b> de {ini.split('-').reverse().join('/')} a {fim.split('-').reverse().join('/')}{fObra !== 'todas' ? <> da obra <b>{fObra}</b></> : ''} e <b>todas as fotos</b> deles. Esta ação não pode ser desfeita.
+            </p>
+            <label style={S.rotulo}>Digite a senha do admin para confirmar</label>
+            <input type="password" value={senha} autoFocus style={{...S.campo, borderColor: erroSenha?COR.vermelho:COR.borda}} onChange={e => { setSenha(e.target.value); setErroSenha(''); }} onKeyDown={e => e.key==='Enter' && confirmarExclusao()}/>
+            {erroSenha && <p style={{color:COR.vermelho, fontSize:13, margin:'8px 0 0', fontWeight:600}}>{erroSenha}</p>}
+            <div style={{display:'flex', gap:10, marginTop:18}}>
+              <button onClick={confirmarExclusao} disabled={excluindo} style={{...S.botaoPrim, flex:1, background:COR.vermelho, opacity:excluindo?.7:1}}>{excluindo ? 'Excluindo…' : 'Excluir definitivamente'}</button>
+              <button onClick={() => { setMostrarExcluir(false); setSenha(''); setErroSenha(''); }} disabled={excluindo} style={S.botaoSec}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// BANNER DE STATUS (online/offline + fila pendente)
+// ============================================================
+function BannerStatus({ online, pendentes, sincronizando, onSincronizar }) {
+  if (online && pendentes === 0) return null; // tudo certo: não mostra nada
+  const offline = !online;
+  return (
+    <div style={{
+      position:'sticky', top:0, zIndex:400, width:'100%',
+      background: offline ? '#92400E' : '#1E40AF', color:'#fff',
+      padding:'8px 14px', fontSize:13, fontWeight:600,
+      display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+    }}>
+      {offline ? (
+        <><CircleSlash size={15}/> Sem conexão — os registros serão guardados no aparelho{pendentes>0?` (${pendentes} na fila)`:''}.</>
+      ) : (
+        <>
+          <Clock size={15}/> {pendentes} registro(s) aguardando envio.
+          <button onClick={onSincronizar} disabled={sincronizando} style={{background:'rgba(255,255,255,.25)', color:'#fff', border:'none', borderRadius:7, padding:'4px 12px', fontSize:12.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>
+            {sincronizando ? 'Enviando…' : 'Enviar agora'}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+// ============================================================
+// FLUXO DO VALIDADOR
+// ============================================================
+
+// Login do validador
+function LoginValidador({ onEntrar, onVoltar }) {
+  const [senha, setSenha] = useState('');
+  const [erro, setErro] = useState(false);
+  function entrar() {
+    if (senha === SENHA_VALIDADOR) onEntrar();
+    else { setErro(true); setSenha(''); }
+  }
+  return (
+    <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:20}}>
+      <div style={{...S.card, maxWidth:380, width:'100%', textAlign:'center', padding:28}}>
+        <div style={{width:60, height:60, borderRadius:16, background:COR.verde, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px'}}>
+          <CheckCircle2 size={30} color="#fff" />
+        </div>
+        <h2 style={{margin:'0 0 6px', fontSize:22, fontWeight:800, color:COR.azul}}>Validador</h2>
+        <p style={{margin:'0 0 20px', color:COR.cinza, fontSize:14}}>Validação de registros de campo</p>
+        <div style={{position:'relative', marginBottom:12}}>
+          <Lock size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+          <input type="password" value={senha} placeholder="Senha" autoFocus
+            style={{...S.campo, paddingLeft:42, borderColor: erro ? COR.vermelho : COR.borda}}
+            onChange={e => { setSenha(e.target.value); setErro(false); }}
+            onKeyDown={e => e.key === 'Enter' && entrar()} />
+        </div>
+        {erro && <p style={{color:COR.vermelho, fontSize:13, margin:'0 0 12px', fontWeight:600}}>Senha incorreta.</p>}
+        <button onClick={entrar} style={{...S.botaoPrim, width:'100%', background:COR.verde}}>Entrar</button>
+        {onVoltar && <button onClick={onVoltar} style={{...S.botaoSec, width:'100%', marginTop:10, border:'none'}}>Voltar</button>}
+      </div>
+    </div>
+  );
+}
+
+// Validador: escolher a obra
+function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onVoltar }) {
+  // conta registros pendentes de validação por obra
+  const pendentesPorObra = {};
+  for (const r of registros) {
+    if (r.validacaoStatus !== 'pendente') continue;
+    const nome = r.obra || 'Sem obra';
+    pendentesPorObra[nome] = (pendentesPorObra[nome] || 0) + 1;
+  }
+  // conta máquinas sem checklist hoje, por obra
+  const hoje = new Date().toISOString().slice(0,10);
+  const comCheckHoje = new Set(registros.filter(r => new Date(r.criadoEm).toISOString().slice(0,10) === hoje).map(r => r.maquinaId));
+  const semCheckPorObra = {};
+  for (const m of maquinas.filter(x => x.ativa)) {
+    const nome = m.obra || 'Sem obra';
+    if (!comCheckHoje.has(m.id)) semCheckPorObra[nome] = (semCheckPorObra[nome] || 0) + 1;
+  }
+  const obras = Array.from(new Set(maquinas.filter(m=>m.ativa).map(m => m.obra || 'Sem obra'))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+
+  return (
+    <div style={{maxWidth:560, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Selecione a obra</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>{obras.length} obra(s)</p>
+        </div>
+      </div>
+      <div style={{display:'flex', flexDirection:'column', gap:10}}>
+        {obras.map(nome => {
+          const pend = pendentesPorObra[nome] || 0;
+          const semCheck = semCheckPorObra[nome] || 0;
+          const partes = [];
+          if (pend > 0) partes.push(`${pend} p/ validar`);
+          if (semCheck > 0) partes.push(`${semCheck} sem checklist`);
+          return (
+            <button key={nome} onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${COR.borda}`, borderRadius:14, padding:'16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+              <div style={{width:42, height:42, borderRadius:11, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><Building size={22} color={COR.azul}/></div>
+              <div style={{flex:1, minWidth:0}}>
+                <div style={{fontSize:15.5, fontWeight:700, color:COR.texto}}>{nome}</div>
+                <div style={{fontSize:12.5, color: partes.length?COR.amarelo:COR.cinza, marginTop:2, fontWeight:600}}>{partes.length ? partes.join(' · ') : 'Tudo em dia'}</div>
+              </div>
+              {pend>0 && <span style={{fontSize:12.5, fontWeight:800, color:'#92400E', background:'#FDE68A', padding:'2px 9px', borderRadius:999}}>{pend}</span>}
+              {semCheck>0 && <span style={{fontSize:12.5, fontWeight:800, color:'#991B1B', background:COR.vermelhoBg, padding:'2px 9px', borderRadius:999}}>{semCheck}</span>}
+              <ChevronRight size={20} color={COR.cinza}/>
+            </button>
+          );
+        })}
+        {obras.length === 0 && <p style={{textAlign:'center', color:COR.cinza, padding:'30px 0'}}>Nenhuma obra com máquinas ativas.</p>}
+      </div>
+    </div>
+  );
+}
+
+// Validador: lista de registros pendentes da obra + validar/invalidar
+function ValidadorRegistros({ obra, registros, maquinas, onValidar, onVoltar }) {
+  const [expandido, setExpandido] = useState(null);
+  const [invalidando, setInvalidando] = useState(null); // id do registro em modo "informar motivo"
+  const [motivo, setMotivo] = useState('');
+  const [processando, setProcessando] = useState(null);
+
+  const mapaMaq = {}; for (const m of maquinas) mapaMaq[m.id] = m;
+
+  const pendentes = registros
+    .filter(r => r.validacaoStatus === 'pendente' && (r.obra || 'Sem obra') === obra)
+    .sort((a,b) => new Date(b.criadoEm) - new Date(a.criadoEm));
+
+  // máquinas da obra que ainda NÃO fizeram checklist HOJE
+  const hoje = new Date().toISOString().slice(0,10);
+  const maquinasComCheckHoje = new Set(
+    registros
+      .filter(r => new Date(r.criadoEm).toISOString().slice(0,10) === hoje)
+      .map(r => r.maquinaId)
+  );
+  const semChecklistHoje = maquinas
+    .filter(m => m.ativa && (m.obra || 'Sem obra') === obra && !maquinasComCheckHoje.has(m.id))
+    .sort((a,b) => (a.codigo||a.descricao).localeCompare(b.codigo||b.descricao, 'pt-BR'));
+
+  async function validar(r) {
+    setProcessando(r.id);
+    await onValidar(r, 'validada', '');
+    setProcessando(null);
+  }
+  async function confirmarInvalidar(r) {
+    if (!motivo.trim()) return;
+    setProcessando(r.id);
+    await onValidar(r, 'invalidada', motivo.trim());
+    setInvalidando(null); setMotivo(''); setProcessando(null);
+  }
+
+  return (
+    <div style={{maxWidth:620, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:20, fontWeight:800, color:COR.azul}}>Validação</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5, display:'flex', alignItems:'center', gap:5}}><Building size={13}/> {obra}</p>
+        </div>
+      </div>
+
+      {/* SEÇÃO 1 — Pendentes de validação */}
+      <div style={{display:'flex', alignItems:'center', gap:8, margin:'0 2px 10px'}}>
+        <Clock size={16} color={COR.amarelo}/>
+        <span style={{fontSize:14.5, fontWeight:800, color:COR.texto}}>Pendentes de validação</span>
+        <span style={{fontSize:12.5, fontWeight:700, color:'#92400E', background:'#FDE68A', padding:'1px 9px', borderRadius:999}}>{pendentes.length}</span>
+      </div>
+
+      {pendentes.length === 0 ? (
+        <div style={{...S.card, textAlign:'center', padding:'22px 16px', color:COR.cinza, marginBottom:24}}>
+          <CheckCircle2 size={32} color={COR.verde}/>
+          <p style={{marginTop:8, fontWeight:600, fontSize:14}}>Nada pendente de validação.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:10, marginBottom:24}}>
+          {pendentes.map(r => {
+            const aberto = expandido === r.id;
+            const func = r.status === 'funcional';
+            const maq = mapaMaq[r.maquinaId];
+            return (
+              <div key={r.id} style={{...S.card, padding:0, overflow:'hidden'}}>
+                <div onClick={() => setExpandido(aberto?null:r.id)} style={{display:'flex', alignItems:'center', gap:12, padding:'13px 16px', cursor:'pointer'}}>
+                  <div style={{width:40, height:40, borderRadius:10, background: func?COR.verdeBg:COR.vermelhoBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                    {func ? <CheckCircle2 size={20} color={COR.verde}/> : <AlertTriangle size={20} color={COR.vermelho}/>}
+                  </div>
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontSize:15, fontWeight:700, color:COR.texto}}>{r.maquinaCodigo ? r.maquinaCodigo+' · ' : ''}{r.maquinaDescricao}</div>
+                    <div style={{fontSize:12.5, color:COR.cinza, marginTop:1}}>{dataHoraBR(r.criadoEm)} · {r.operador || 'sem nome'}</div>
+                  </div>
+                  {func
+                    ? <Badge cor={COR.verde} bg={COR.verdeBg}>Funcional</Badge>
+                    : <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>{r.motivoParada || 'Parada'}</Badge>}
+                  <ChevronDown size={18} color={COR.cinza} style={{transform: aberto?'rotate(180deg)':'none', transition:'transform .15s', flexShrink:0}}/>
+                </div>
+
+                {aberto && (
+                  <div style={{borderTop:`1px solid ${COR.borda}`, padding:'14px 16px', background:'#FAFBFC'}}>
+                    <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(130px,1fr))', gap:8, marginBottom:12, fontSize:13}}>
+                      {func && <div><b>Medidor:</b> {r.horimetroNA ? 'N/A' : (r.horimetro!=null ? r.horimetro+(maq&&maq.unidade==='km'?'km':'h') : '—')}</div>}
+                      <div><b>Status:</b> {func ? 'Funcional' : 'Não funcional'}</div>
+                      {!func && <div><b>Motivo:</b> {r.motivoParada || '—'}</div>}
+                    </div>
+                    {r.observacao && <div style={{fontSize:13.5, marginBottom:10}}><b>Obs:</b> {r.observacao}</div>}
+                    {r.fotoUrl && <a href={r.fotoUrl} target="_blank" rel="noopener"><img src={r.fotoUrl} alt="painel" style={{width:90, height:90, objectFit:'cover', borderRadius:8, border:`1px solid ${COR.borda}`, marginBottom:10}}/></a>}
+
+                    {invalidando === r.id ? (
+                      <div style={{marginTop:6}}>
+                        <label style={S.rotulo}>Motivo da invalidação</label>
+                        <textarea value={motivo} rows={2} placeholder="Descreva o que está errado…" style={{...S.campo, resize:'vertical'}} onChange={e => setMotivo(e.target.value)} autoFocus/>
+                        <div style={{display:'flex', gap:8, marginTop:8}}>
+                          <button onClick={() => confirmarInvalidar(r)} disabled={!motivo.trim() || processando===r.id} style={{...S.botaoPrim, flex:1, background:COR.vermelho, opacity:(!motivo.trim()||processando===r.id)?.6:1}}>Confirmar invalidação</button>
+                          <button onClick={() => { setInvalidando(null); setMotivo(''); }} style={S.botaoSec}>Cancelar</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{display:'flex', gap:10, marginTop:6}}>
+                        <button onClick={() => validar(r)} disabled={processando===r.id} style={{...S.botaoPrim, flex:1, background:COR.verde, opacity:processando===r.id?.7:1}}><CheckCircle2 size={17}/> Validar</button>
+                        <button onClick={() => { setInvalidando(r.id); setMotivo(''); }} style={{...S.botaoSec, color:COR.vermelho, borderColor:'#FECACA'}}><X size={17}/> Invalidar</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* SEÇÃO 2 — Máquinas sem checklist hoje */}
+      <div style={{display:'flex', alignItems:'center', gap:8, margin:'0 2px 10px'}}>
+        <AlertTriangle size={16} color={COR.vermelho}/>
+        <span style={{fontSize:14.5, fontWeight:800, color:COR.texto}}>Sem checklist hoje</span>
+        <span style={{fontSize:12.5, fontWeight:700, color:'#991B1B', background:COR.vermelhoBg, padding:'1px 9px', borderRadius:999}}>{semChecklistHoje.length}</span>
+      </div>
+
+      {semChecklistHoje.length === 0 ? (
+        <div style={{...S.card, textAlign:'center', padding:'22px 16px', color:COR.cinza}}>
+          <CheckCircle2 size={32} color={COR.verde}/>
+          <p style={{marginTop:8, fontWeight:600, fontSize:14}}>Todas as máquinas fizeram o checklist hoje.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:8}}>
+          {semChecklistHoje.map(m => (
+            <div key={m.id} style={{...S.card, display:'flex', alignItems:'center', gap:12, padding:'12px 16px'}}>
+              <div style={{width:40, height:40, borderRadius:10, background:COR.vermelhoBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                <CircleSlash size={20} color={COR.vermelho}/>
+              </div>
+              <div style={{flex:1, minWidth:0}}>
+                <div style={{fontSize:15, fontWeight:700, color:COR.texto}}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</div>
+                <div style={{fontSize:12.5, color:COR.cinza, marginTop:1}}>Aguardando checklist do dia</div>
+              </div>
+              <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>Pendente</Badge>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// APP RAIZ
+// ============================================================
+function App() {
+  const [modo, setModo] = useState('inicial');     // 'inicial' | 'operador' | 'admin'
+  const [logado, setLogado] = useState(false);      // login do admin
+  const [logadoValidador, setLogadoValidador] = useState(false);
+  const [valObra, setValObra] = useState(null);
+  const [maquinas, setMaquinas] = useState([]);
+  const [obras, setObras] = useState([]);
+  const [registros, setRegistros] = useState([]);
+  const [checklistItens, setChecklistItens] = useState(CHECKLIST_PADRAO);
+  const [carregando, setCarregando] = useState(true);
+  const [tela, setTela] = useState('lista');      // admin: 'lista' | 'form'
+  const [editando, setEditando] = useState(null);  // máquina em edição
+  const [showObras, setShowObras] = useState(false);
+  const [showChecklist, setShowChecklist] = useState(false);
+  const [toast, setToast] = useState('');
+
+  // Fluxo operador: 'maquina' (escolhe) | 'registra' | 'sucesso'
+  const [opPasso, setOpPasso] = useState('obra');
+  const [opObra, setOpObra] = useState(null);
+  const [opMaquina, setOpMaquina] = useState(null);
+  const [opSalvando, setOpSalvando] = useState(false);
+  const [opResultado, setOpResultado] = useState(null);
+  const [filaPendentes, setFilaPendentes] = useState(0);
+  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [sincronizando, setSincronizando] = useState(false);
+
+  function aviso(msg) { setToast(msg); setTimeout(() => setToast(''), 2600); }
+
+  // Sincroniza a fila offline e atualiza o contador
+  async function tentarSincronizar() {
+    setSincronizando(true);
+    try {
+      const r = await sincronizarFila();
+      setFilaPendentes(r.restantes);
+      if (r.enviados > 0) { aviso(`${r.enviados} registro(s) sincronizado(s).`); recarregar(); }
+    } catch (e) { console.error(e); }
+    finally { setSincronizando(false); }
+  }
+
+  // Monitora conexão e sincroniza ao voltar online
+  useEffect(() => {
+    filaContar().then(setFilaPendentes);
+    // pré-carrega o cache offline (máquinas/obras/checklist) ao abrir com internet
+    if (navigator.onLine && supabaseClient) {
+      listarMaquinas(); listarObras(); lerChecklistConfig();
+    }
+    function aoOnline() { setOnline(true); tentarSincronizar(); }
+    function aoOffline() { setOnline(false); }
+    window.addEventListener('online', aoOnline);
+    window.addEventListener('offline', aoOffline);
+    const onFila = (e) => setFilaPendentes(e.detail.restantes);
+    window.addEventListener('fila-mudou', onFila);
+    // tenta sincronizar ao abrir, se houver pendências e estiver online
+    if (navigator.onLine) tentarSincronizar();
+    return () => {
+      window.removeEventListener('online', aoOnline);
+      window.removeEventListener('offline', aoOffline);
+      window.removeEventListener('fila-mudou', onFila);
+    };
+  }, []);
+
+  async function recarregar() {
+    const [ms, os, rs, ci] = await Promise.all([listarMaquinas(), listarObras(), listarRegistros(), lerChecklistConfig()]);
+    setMaquinas(ms); setObras(os); setRegistros(rs); setChecklistItens(ci); setCarregando(false);
+  }
+
+  // Carrega dados quando entra em operador ou admin
+  const ativo = modo === 'operador' || (modo === 'validador' && logadoValidador) || (modo === 'admin' && logado);
+  useEffect(() => {
+    if (!ativo) return;
+    let canal;
+    (async () => {
+      setCarregando(true);
+      if (navigator.onLine && supabaseClient) {
+        try { await semearSeVazio(); await semearChecklistSeVazio(); } catch (e) { console.warn('semear', e); }
+      }
+      await recarregar();
+      if (supabaseClient && navigator.onLine) {
+        canal = supabaseClient.channel('frota')
+          .on('postgres_changes', { event:'*', schema:'public', table:'maquinas' }, recarregar)
+          .on('postgres_changes', { event:'*', schema:'public', table:'obras' }, recarregar)
+          .on('postgres_changes', { event:'*', schema:'public', table:'registros' }, recarregar)
+          .on('postgres_changes', { event:'*', schema:'public', table:'configuracoes' }, recarregar)
+          .subscribe();
+      }
+    })();
+    return () => { if (canal) supabaseClient.removeChannel(canal); };
+  }, [ativo]);
+
+  // Último status de cada máquina (a partir dos registros, já ordenados desc)
+  const ultimoStatus = {};
+  const ultimoRegistroNaoFunc = {}; // máquina -> registro de parada em aberto
+  for (const r of registros) {
+    if (ultimoStatus[r.maquinaId] === undefined) {
+      ultimoStatus[r.maquinaId] = r.status;
+      if (r.status === 'nao_funcional') ultimoRegistroNaoFunc[r.maquinaId] = r;
+    }
+  }
+
+  // --- CRUD máquinas ---
+  async function salvarMaquina(dados) {
+    if (!supabaseClient) return;
+    const payload = maquinaParaBanco(dados);
+    if (dados.id) {
+      await supabaseClient.from('maquinas').update(payload).eq('id', dados.id);
+      aviso('Máquina atualizada.');
+    } else {
+      await supabaseClient.from('maquinas').insert(payload);
+      aviso('Máquina cadastrada.');
+    }
+    setTela('lista'); setEditando(null);
+    recarregar();
+  }
+  async function toggleAtiva(m) {
+    if (!supabaseClient) return;
+    await supabaseClient.from('maquinas').update({ ativa: !m.ativa }).eq('id', m.id);
+    aviso(m.ativa ? 'Máquina inativada.' : 'Máquina reativada.');
+    recarregar();
+  }
+
+  // --- Registro do operador ---
+  async function salvarRegistro(dados) {
+    if (!opMaquina) return;
+    setOpSalvando(true);
+    const criadoEm = new Date().toISOString();
+
+    // indisponibilidade (se volta a funcional com parada aberta)
+    const paradaAberta = ultimoRegistroNaoFunc[opMaquina.id] || null;
+    let indisponivelMin = null, fimParadaDe = null;
+    if (dados.status === 'funcional' && paradaAberta) {
+      indisponivelMin = Math.max(0, Math.round((Date.now() - new Date(paradaAberta.criadoEm).getTime()) / 60000));
+      fimParadaDe = paradaAberta.id;
+    }
+
+    // linha base (sem fotos — as URLs entram no envio)
+    const linhaBase = {
+      maquina_id: opMaquina.id,
+      maquina_codigo: opMaquina.codigo,
+      maquina_descricao: opMaquina.descricao,
+      obra: opMaquina.obra,
+      operador: dados.operador,
+      status: dados.status,
+      horimetro: dados.horimetro,
+      horimetro_na: dados.horimetroNA,
+      motivo_parada: dados.motivo,
+      observacao: dados.observacao,
+      fim_parada_de: fimParadaDe,
+      indisponivel_minutos: indisponivelMin,
+      checklist: dados.checklist || [],
+      criado_em: criadoEm,
+    };
+    const maquinaUpdate = { status_atual: dados.status };
+    if (dados.status === 'funcional' && dados.horimetro != null) maquinaUpdate.horimetro_atual = dados.horimetro;
+
+    const estaOnline = navigator.onLine && supabaseClient;
+
+    try {
+      if (estaOnline) {
+        // ---- CAMINHO ONLINE: envia direto ----
+        let fotoUrl = '';
+        if (dados.foto) fotoUrl = await enviarFoto(dados.foto);
+        const fotosExtrasUrls = [];
+        for (const f of (dados.fotosExtras || [])) {
+          try { const u = await enviarFoto(f); if (u) fotosExtrasUrls.push(u); } catch (e) { console.error('foto extra', e); }
+        }
+        const linha = { ...linhaBase, foto_url: fotoUrl, fotos_extras: fotosExtrasUrls };
+        const { error } = await supabaseClient.from('registros').insert(linha);
+        if (error) throw error;
+        await supabaseClient.from('maquinas').update(maquinaUpdate).eq('id', opMaquina.id);
+
+        const regCompleto = { ...registroDoBanco(linha), fotoUrl, fotosExtras: fotosExtrasUrls };
+        setOpResultado({
+          maquina: `${opMaquina.codigo ? opMaquina.codigo + ' · ' : ''}${opMaquina.descricao}`,
+          indisponivelMinutos: indisponivelMin, registro: regCompleto, maquinaObj: opMaquina, offline: false,
+        });
+        setOpPasso('sucesso');
+        recarregar();
+      } else {
+        // ---- CAMINHO OFFLINE: guarda na fila local ----
+        const item = {
+          id: 'fila_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+          linha: linhaBase,
+          maquinaId: opMaquina.id,
+          maquinaUpdate,
+          fotoBlob: dados.foto || null,            // File é um Blob — IndexedDB guarda direto
+          fotosExtrasBlobs: dados.fotosExtras || [],
+        };
+        await filaAdicionar(item);
+        const n = await filaContar();
+        setFilaPendentes(n);
+        // registro p/ PDF local (usa as fotos como objeto URL temporário)
+        const regCompleto = {
+          ...registroDoBanco({ ...linhaBase, foto_url:'', fotos_extras:[] }),
+          fotoUrl: dados.foto ? URL.createObjectURL(dados.foto) : '',
+          fotosExtras: (dados.fotosExtras || []).map(f => URL.createObjectURL(f)),
+        };
+        setOpResultado({
+          maquina: `${opMaquina.codigo ? opMaquina.codigo + ' · ' : ''}${opMaquina.descricao}`,
+          indisponivelMinutos: indisponivelMin, registro: regCompleto, maquinaObj: opMaquina, offline: true,
+        });
+        setOpPasso('sucesso');
+      }
+    } catch (e) {
+      console.error('salvarRegistro', e);
+      // se falhou online (rede caiu no meio), tenta guardar offline como segurança
+      try {
+        const item = {
+          id: 'fila_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+          linha: linhaBase, maquinaId: opMaquina.id, maquinaUpdate,
+          fotoBlob: dados.foto || null, fotosExtrasBlobs: dados.fotosExtras || [],
+        };
+        await filaAdicionar(item);
+        setFilaPendentes(await filaContar());
+        setOpResultado({
+          maquina: `${opMaquina.codigo ? opMaquina.codigo + ' · ' : ''}${opMaquina.descricao}`,
+          indisponivelMinutos: indisponivelMin, registro: null, maquinaObj: opMaquina, offline: true,
+        });
+        setOpPasso('sucesso');
+      } catch (e2) {
+        alert('Não foi possível salvar o registro.\n\n' + (e.message || ''));
+      }
+    } finally {
+      setOpSalvando(false);
+    }
+  }
+
+  function reiniciarOperador() {
+    setOpMaquina(null); setOpObra(null); setOpResultado(null); setOpPasso('obra');
+  }
+  function sairParaInicio() {
+    reiniciarOperador(); setModo('inicial');
+  }
+
+  // --- Validação (validador) ---
+  async function validarRegistro(reg, status, motivo) {
+    if (!supabaseClient) return;
+    await supabaseClient.from('registros').update({
+      validacao_status: status,
+      validacao_por: 'Validador',
+      validacao_em: new Date().toISOString(),
+      validacao_motivo: status === 'invalidada' ? motivo : null,
+    }).eq('id', reg.id);
+    aviso(status === 'validada' ? 'Registro validado.' : 'Registro invalidado.');
+    recarregar();
+  }
+  function sairValidador() {
+    setLogadoValidador(false); setValObra(null); setModo('inicial');
+  }
+
+  // --- Configuração do checklist (admin) ---
+  async function salvarChecklist(itens) {
+    await salvarChecklistConfig(itens);
+    setChecklistItens(itens);
+    setShowChecklist(false);
+    aviso('Checklist atualizado.');
+    recarregar();
+  }
+
+  // Salva o checklist próprio de uma máquina (lista = null volta ao padrão)
+  async function salvarChecklistMaquina(maquina, lista) {
+    if (!supabaseClient) return;
+    await supabaseClient.from('maquinas')
+      .update({ checklist_itens: (lista && lista.length) ? lista : null })
+      .eq('id', maquina.id);
+    aviso('Checklist da máquina salvo.');
+    recarregar();
+  }
+
+  // --- CRUD obras ---
+  async function criarObra(nome) {
+    if (!supabaseClient) return;
+    await supabaseClient.from('obras').insert({ nome, ativa:true });
+    recarregar();
+  }
+  async function renomearObra(id, nome) {
+    if (!nome || !supabaseClient) return;
+    await supabaseClient.from('obras').update({ nome }).eq('id', id);
+    recarregar();
+  }
+  async function excluirObra(o) {
+    if (!supabaseClient) return;
+    const emUso = maquinas.filter(m => m.obra === o.nome).length;
+    const msg = emUso
+      ? `A obra "${o.nome}" está vinculada a ${emUso} máquina(s). Excluir mesmo assim? As máquinas ficarão sem obra.`
+      : `Excluir a obra "${o.nome}"?`;
+    if (!window.confirm(msg)) return;
+    await supabaseClient.from('obras').delete().eq('id', o.id);
+    recarregar();
+  }
+
+  // ---------- MODO INICIAL ----------
+  const bannerProps = { online, pendentes: filaPendentes, sincronizando, onSincronizar: tentarSincronizar };
+
+  if (modo === 'inicial') {
+    return (
+      <>
+        <BannerStatus {...bannerProps} />
+        <TelaInicial onOperador={() => { reiniciarOperador(); setModo('operador'); }} onValidador={() => setModo('validador')} onAdmin={() => setModo('admin')} />
+      </>
+    );
+  }
+
+  // ---------- MODO VALIDADOR ----------
+  if (modo === 'validador') {
+    if (!logadoValidador) return <LoginValidador onEntrar={() => setLogadoValidador(true)} onVoltar={() => setModo('inicial')} />;
+    return (
+      <div style={{minHeight:'100vh', background:COR.bg}}>
+        <BannerStatus {...bannerProps} />
+        <header style={{background:COR.verde, color:'#fff', padding:'14px 20px', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+          <div style={{display:'flex', alignItems:'center', gap:10}}>
+            <div style={{width:34, height:34, borderRadius:9, background:'rgba(255,255,255,.2)', display:'flex', alignItems:'center', justifyContent:'center'}}><CheckCircle2 size={20} color="#fff"/></div>
+            <div>
+              <div style={{fontWeight:800, fontSize:16, lineHeight:1}}>Validação</div>
+              <div style={{fontSize:11.5, opacity:.8}}>Validador</div>
+            </div>
+          </div>
+          <button onClick={sairValidador} style={{background:'rgba(255,255,255,.2)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}><LogOut size={16}/> Sair</button>
+        </header>
+        <main style={{padding:'24px 16px 60px'}}>
+          {carregando ? (
+            <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando…</p>
+          ) : !valObra ? (
+            <ValidadorSelecionaObra maquinas={maquinas} registros={registros} onEscolher={setValObra} onVoltar={sairValidador} />
+          ) : (
+            <ValidadorRegistros obra={valObra} registros={registros} maquinas={maquinas} onValidar={validarRegistro} onVoltar={() => setValObra(null)} />
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  // ---------- MODO OPERADOR ----------
+  if (modo === 'operador') {
+    return (
+      <div style={{minHeight:'100vh', background:COR.bg}}>
+        <BannerStatus {...bannerProps} />
+        <header style={{background:COR.azul, color:'#fff', padding:'14px 20px', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+          <div style={{display:'flex', alignItems:'center', gap:10}}>
+            <div style={{width:34, height:34, borderRadius:9, background:'rgba(255,255,255,.15)', display:'flex', alignItems:'center', justifyContent:'center'}}><User size={20} color="#fff"/></div>
+            <div>
+              <div style={{fontWeight:800, fontSize:16, lineHeight:1}}>Registro de Máquina</div>
+              <div style={{fontSize:11.5, opacity:.7}}>Operador</div>
+            </div>
+          </div>
+          <button onClick={sairParaInicio} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}><LogOut size={16}/> Sair</button>
+        </header>
+        <main style={{padding:'24px 16px 60px'}}>
+          {carregando ? (
+            <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando máquinas…</p>
+          ) : opPasso === 'obra' ? (
+            <OperadorSelecionaObra
+              obras={obras} maquinas={maquinas}
+              onEscolher={(nome) => { setOpObra(nome); setOpPasso('maquina'); }}
+              onVoltar={sairParaInicio}
+            />
+          ) : opPasso === 'maquina' ? (
+            <OperadorSelecionaMaquina
+              maquinas={maquinas} obra={opObra} ultimoStatus={ultimoStatus}
+              onEscolher={(m) => { setOpMaquina(m); setOpPasso('registra'); }}
+              onVoltar={() => { setOpObra(null); setOpPasso('obra'); }}
+            />
+          ) : opPasso === 'registra' ? (
+            <OperadorRegistra
+              maquina={opMaquina}
+              paradaAberta={ultimoRegistroNaoFunc[opMaquina.id] || null}
+              checklistItens={checklistDaMaquina(opMaquina, checklistItens)}
+              salvando={opSalvando}
+              onConfirmar={salvarRegistro}
+              onVoltar={() => { setOpMaquina(null); setOpPasso('maquina'); }}
+            />
+          ) : (
+            <OperadorSucesso info={opResultado} onNovo={reiniciarOperador} onSair={sairParaInicio} />
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  // ---------- MODO ADMIN ----------
+  if (!logado) return <LoginAdmin onEntrar={() => setLogado(true)} onVoltar={() => setModo('inicial')} />;
+
+  return (
+    <div style={{minHeight:'100vh', background:COR.bg}}>
+      <BannerStatus {...bannerProps} />
+      {/* Cabeçalho */}
+      <header style={{background:COR.azul, color:'#fff', padding:'14px 20px', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+        <div style={{display:'flex', alignItems:'center', gap:10}}>
+          <div style={{width:34, height:34, borderRadius:9, background:'rgba(255,255,255,.15)', display:'flex', alignItems:'center', justifyContent:'center'}}>
+            <Factory size={20} color="#fff"/>
+          </div>
+          <div>
+            <div style={{fontWeight:800, fontSize:16, lineHeight:1}}>Gestão de Frota</div>
+            <div style={{fontSize:11.5, opacity:.7}}>Construtora Axial</div>
+          </div>
+        </div>
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          <button onClick={() => setTela(tela === 'registros' ? 'lista' : 'registros')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <FileText size={16}/> Registros
+          </button>
+          <button onClick={() => setTela(tela === 'relatorios' ? 'lista' : 'relatorios')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <BarChart3 size={16}/> Relatórios
+          </button>
+          <button onClick={() => setShowChecklist(true)} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <List size={16}/> Checklist padrão
+          </button>
+          <button onClick={() => setTela(tela === 'checklist_maquina' ? 'lista' : 'checklist_maquina')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <Factory size={16}/> Checklist/máq.
+          </button>
+          <button onClick={() => { setLogado(false); setModo('inicial'); setTela('lista'); }} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <LogOut size={16}/> Sair
+          </button>
+        </div>
+      </header>
+
+      <main style={{padding:'24px 16px 60px'}}>
+        {tela === 'lista' && (
+          <TelaMaquinas
+            maquinas={maquinas} obras={obras} carregando={carregando}
+            onNova={() => { setEditando(null); setTela('form'); }}
+            onEditar={(m) => { setEditando(m); setTela('form'); }}
+            onToggleAtiva={toggleAtiva}
+            onAbrirObras={() => setShowObras(true)}
+          />
+        )}
+        {tela === 'form' && (
+          <FormMaquina
+            maquina={editando} obras={obras}
+            onSalvar={salvarMaquina}
+            onCancelar={() => { setTela('lista'); setEditando(null); }}
+          />
+        )}
+        {tela === 'relatorios' && (
+          <TelaRelatorios
+            registros={registros} maquinas={maquinas}
+            onVoltar={() => setTela('lista')}
+          />
+        )}
+        {tela === 'registros' && (
+          <TelaRegistros
+            registros={registros} maquinas={maquinas}
+            onVoltar={() => setTela('lista')}
+            onExcluirPeriodo={async (ini, fim, obra) => {
+              const r = await excluirRegistrosPeriodo(registros, ini, fim, obra);
+              await recarregar();
+              return r;
+            }}
+          />
+        )}
+        {tela === 'checklist_maquina' && (
+          <TelaChecklistMaquinas
+            maquinas={maquinas} padrao={checklistItens}
+            onVoltar={() => setTela('lista')}
+            onSalvarMaquina={salvarChecklistMaquina}
+          />
+        )}
+      </main>
+
+      {showObras && (
+        <GestaoObras obras={obras} onCriar={criarObra} onRenomear={renomearObra} onExcluir={excluirObra} onFechar={() => setShowObras(false)} />
+      )}
+
+      {showChecklist && (
+        <ConfigChecklist itens={checklistItens} onSalvar={salvarChecklist} onFechar={() => setShowChecklist(false)} />
+      )}
+
+      {toast && (
+        <div style={{position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', background:COR.azul, color:'#fff', padding:'12px 22px', borderRadius:999, fontSize:14, fontWeight:600, boxShadow:'0 8px 24px rgba(0,0,0,.2)', zIndex:600, display:'flex', alignItems:'center', gap:8}}>
+          <CheckCircle2 size={18}/> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const _root = ReactDOM.createRoot(document.getElementById('root'));
+_root.render(<App />);
+  </script>
+</body>
+</html>
