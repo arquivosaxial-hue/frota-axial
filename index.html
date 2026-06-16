@@ -1169,7 +1169,13 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
   head.forEach((h,i) => doc.text(h, colX[i], y)); y += 7;
   doc.setFont('helvetica', 'normal');
   for (const r of resumo) {
-    if (y > 275) { doc.addPage(); y = 20; }
+    if (y > 272) { doc.addPage(); y = 20; }
+    // fornecedor (empresa) em destaque acima do nome
+    const empresaTxt = r.maquina.tipo === 'prestador' ? (r.maquina.empresaLocadora || 'Locada (sem empresa)') : 'Axial (própria)';
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(124, 58, 237);
+    doc.text(empresaTxt.toUpperCase(), colX[0], y);
+    doc.setTextColor(30); doc.setFontSize(8.5); doc.setFont('helvetica', 'normal');
+    y += 4.5;
     const nome = `${r.maquina.codigo ? r.maquina.codigo+' ' : ''}${r.maquina.descricao}`;
     doc.text(doc.splitTextToSize(nome, 60)[0], colX[0], y);
     doc.text(String(r.diasFuncionando), colX[1], y);
@@ -1177,7 +1183,9 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
     doc.text(r.maquina.possuiHorimetro ? String(r.horasTrabalhadas)+unidadeSufixo(r.maquina) : '—', colX[3], y);
     doc.text(formatarDuracao(r.paradoMin || 0), colX[4], y);
     doc.text(r.disponibilidade != null ? r.disponibilidade+'%' : '—', colX[5], y);
-    y += 6.5;
+    y += 5;
+    doc.setDrawColor(235); doc.line(12, y-1.5, W-12, y-1.5);
+    y += 2;
   }
 
   // Motivos de parada (agregado)
