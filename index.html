@@ -1070,15 +1070,20 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
     const stPorDia = {}; for (const dia in porDia) stPorDia[dia] = statusDoDia(porDia[dia]);
 
     // calcula altura necessária e quebra página se preciso
-    const alturaBloco = 16 + Math.ceil(meses.length / 3) * 44 + 14;
+    const alturaBloco = 22 + Math.ceil(meses.length / 3) * 44 + 14;
     if (y + alturaBloco > H - 12) { doc.addPage(); cabecalho(); y = 34; }
 
     // título da máquina
+    // empresa (fornecedor) em destaque no início
+    const empresaTxt = maquina.tipo === 'prestador' ? (maquina.empresaLocadora || 'Locada (sem empresa)') : 'Axial (própria)';
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(124, 58, 237);
+    doc.text(empresaTxt.toUpperCase(), 14, y);
+    y += 6;
     doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(27, 58, 92);
     doc.text(`${maquina.codigo ? maquina.codigo + ' · ' : ''}${maquina.descricao}`, 14, y);
     y += 5;
     doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(110);
-    doc.text(`${maquina.obra || 'Sem obra'} · ${maquina.tipo === 'prestador' ? (maquina.empresaLocadora || 'Locada') : 'Axial'}`, 14, y);
+    doc.text(`${maquina.obra || 'Sem obra'}`, 14, y);
     y += 5;
     legenda(y); y += 6;
 
