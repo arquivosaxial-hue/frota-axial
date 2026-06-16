@@ -5,7 +5,7 @@
 
 // IMPORTANTE: ao publicar uma nova versão do app, troque o número da versão
 // abaixo (ex: v2, v3...). Isso força os celulares a baixarem a versão nova.
-const VERSION = 'frota-axial-v15';
+const VERSION = 'frota-axial-v16';
 const CACHE = VERSION;
 
 // Arquivos essenciais do app (o "casco")
