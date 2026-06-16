@@ -649,6 +649,8 @@ function registroDoBanco(l) {
     validacaoMotivo: l.validacao_motivo || '',
     retroativo: l.retroativo === true,
     complemento: l.complemento === true,
+    ajusteAdmin: l.ajuste_admin === true,
+    ajusteAdminEm: l.ajuste_admin_em || null,
     dataRef: l.data_ref || null,
     criadoEm: l.criado_em,
   };
@@ -901,9 +903,24 @@ function statusDoDia(regs) {
   const ord = [...regs].sort((a,b) => new Date(a.criadoEm) - new Date(b.criadoEm));
   const primeiro = ord[0];
   const ultimo = ord[ord.length - 1];
-  const horaUltimo = new Date(ultimo.criadoEm).getHours();
-  if (primeiro.status === 'funcional' && horaUltimo >= 14) return 'funcional';
-  return ultimo.status === 'funcional' ? 'funcional' : 'nao_funcional';
+  // se há qualquer registro de atividade (funcional/parado), ele prevalece sobre "sem atividade"
+  const comAtividade = ord.filter(r => r.status === 'funcional' || r.status === 'nao_funcional');
+  if (comAtividade.length === 0) {
+    // só registros de "sem atividade"
+    return ultimo.status === 'sem_atividade' ? 'sem_atividade' : null;
+  }
+  const primeiroAt = comAtividade[0];
+  const ultimoAt = comAtividade[comAtividade.length - 1];
+  const horaUltimo = new Date(ultimoAt.criadoEm).getHours();
+  if (primeiroAt.status === 'funcional' && horaUltimo >= 14) return 'funcional';
+  return ultimoAt.status === 'funcional' ? 'funcional' : 'nao_funcional';
+}
+
+// Badge visual do status de um registro (funcional / não funcional / sem atividade)
+function BadgeStatusReg({ registro }) {
+  if (registro.status === 'sem_atividade') return <Badge cor="#475569" bg="#F1F5F9"><CircleSlash size={11}/> Sem atividade</Badge>;
+  if (registro.status === 'funcional') return <Badge cor={COR.verde} bg={COR.verdeBg}>Funcional</Badge>;
+  return <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>{registro.motivoParada || 'Parada'}</Badge>;
 }
 
 // Retorna lista de { maquina, dias:{funcionando,parado,comRegistro}, horas, paradoMin, motivos:{}, disponibilidade }
@@ -1040,7 +1057,7 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
 
   // legenda
   function legenda(yy) {
-    const itens = [['Funcional', [34,197,94]], ['Não funcional', [239,68,68]], ['Sem checklist', [226,232,240]]];
+    const itens = [['Funcional', [34,197,94]], ['Não funcional', [239,68,68]], ['Sem atividade', [100,116,139]], ['Sem checklist', [226,232,240]]];
     let x = 14;
     doc.setFontSize(8.5); doc.setFont('helvetica', 'normal');
     for (const [txt, cor] of itens) {
@@ -1115,6 +1132,7 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
           const st = stPorDia[iso];
           if (st === 'funcional') cor = [34,197,94];
           else if (st === 'nao_funcional') cor = [239,68,68];
+          else if (st === 'sem_atividade') cor = [100,116,139];
         } else { cor = [248,250,252]; }
         doc.setFillColor(cor[0], cor[1], cor[2]);
         doc.roundedRect(cx, cy, cell, cell, 1, 1, 'F');
@@ -2005,11 +2023,13 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
         if (horimetro === '' || isNaN(Number(horimetro))) { setErro('Informe o horímetro atual (ou marque "Não Aplicável").'); return; }
         if (!foto && !dataRef && !complemento) { setErro('A foto do painel é obrigatória para validar o horímetro.'); return; }
       }
-    } else { // nao_funcional
+    } else if (status === 'nao_funcional') {
       if (!motivo) { setErro('Selecione o motivo da parada.'); return; }
     }
-    // monta o checklist final (só itens respondidos)
-    const checklist = (checklistItens || []).map(item => ({
+    // "sem_atividade": não exige mais nada além do nome.
+    const semAtiv = status === 'sem_atividade';
+    // monta o checklist final (só itens respondidos) — vazio em sem_atividade
+    const checklist = semAtiv ? [] : (checklistItens || []).map(item => ({
       item,
       status: (check[item] && check[item].status) || null,
       obs: (check[item] && check[item].obs) || '',
@@ -2018,12 +2038,12 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
       operador: operador.trim(),
       status,
       horimetro: (status === 'funcional' && temHorimetro && !na) ? Number(horimetro) : null,
-      horimetroNA: status === 'funcional' && temHorimetro ? na : false,
+      horimetroNA: status === 'funcional' && temHorimetro ? na : (semAtiv ? true : false),
       motivo: status === 'nao_funcional' ? motivo : '',
       observacao: obs.trim(),
-      foto,
+      foto: semAtiv ? null : foto,
       checklist,
-      fotosExtras: extras.map(x => x.file),
+      fotosExtras: semAtiv ? [] : extras.map(x => x.file),
     });
   }
 
@@ -2091,7 +2111,20 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
               <span style={{fontSize:15, fontWeight:700, color: status==='nao_funcional'?COR.vermelho:COR.texto}}>Não Funcional</span>
             </button>
           </div>
+          {/* "Não houve atividade" — só em lançamento retroativo */}
+          {dataRef && (
+            <button onClick={() => setStatus('sem_atividade')} style={{marginTop:10, width:'100%', padding:'13px 12px', borderRadius:12, border:`2px solid ${status==='sem_atividade'?'#64748B':COR.borda}`, background: status==='sem_atividade'?'#F1F5F9':'#fff', cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8}}>
+              <CircleSlash size={20} color={status==='sem_atividade'?'#475569':COR.cinza}/>
+              <span style={{fontSize:15, fontWeight:700, color: status==='sem_atividade'?'#475569':COR.texto}}>Não houve atividade</span>
+            </button>
+          )}
         </div>
+
+        {status === 'sem_atividade' && (
+          <div style={{background:'#F1F5F9', border:'1px solid #E2E8F0', borderRadius:12, padding:'12px 14px', fontSize:13.5, color:'#475569'}}>
+            Você está registrando que <b>não houve atividade</b> neste dia. Não é necessário preencher horímetro, foto ou checklist. Basta confirmar com seu nome.
+          </div>
+        )}
 
         {/* Bloco Funcional */}
         {status === 'funcional' && (
@@ -2155,8 +2188,8 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
           </div>
         )}
 
-        {/* Checklist de itens (sempre que escolheu status) */}
-        {status && (checklistItens || []).length > 0 && (
+        {/* Checklist de itens (não aparece em "sem atividade") */}
+        {status && status !== 'sem_atividade' && (checklistItens || []).length > 0 && (
           <div>
             <div style={{height:1, background:COR.borda, margin:'2px 0 14px'}} />
             <label style={S.rotulo}>Checklist de itens</label>
@@ -2266,7 +2299,7 @@ function OperadorSucesso({ info, onNovo, onSair }) {
 // ADMIN: RELATÓRIOS (período + resumo + PDF)
 // ============================================================
 // Calendário mensal de uma máquina: verde (funcional), vermelho (não funcional), cinza (sem registro)
-function CalendarioMaquina({ maquina, registros, ini, fim }) {
+function CalendarioMaquina({ maquina, registros, ini, fim, onEditarDia }) {
   // agrupa registros da máquina por dia
   const porDia = {};
   for (const r of registros) {
@@ -2292,6 +2325,7 @@ function CalendarioMaquina({ maquina, registros, ini, fim }) {
     const st = statusPorDia[iso];
     if (st === 'funcional') return { bg: COR.verde, fg: '#fff' };
     if (st === 'nao_funcional') return { bg: COR.vermelho, fg: '#fff' };
+    if (st === 'sem_atividade') return { bg: '#64748B', fg: '#fff' };
     return { bg: '#EFF1F4', fg: COR.cinza };
   }
 
@@ -2304,7 +2338,9 @@ function CalendarioMaquina({ maquina, registros, ini, fim }) {
       <div style={{display:'flex', gap:16, flexWrap:'wrap', marginBottom:16}}>
         <span style={{display:'flex', alignItems:'center', gap:6, fontSize:12.5, color:COR.cinza}}><span style={{width:13, height:13, borderRadius:4, background:COR.verde, display:'inline-block'}}/> Funcional</span>
         <span style={{display:'flex', alignItems:'center', gap:6, fontSize:12.5, color:COR.cinza}}><span style={{width:13, height:13, borderRadius:4, background:COR.vermelho, display:'inline-block'}}/> Não funcional</span>
+        <span style={{display:'flex', alignItems:'center', gap:6, fontSize:12.5, color:COR.cinza}}><span style={{width:13, height:13, borderRadius:4, background:'#64748B', display:'inline-block'}}/> Sem atividade</span>
         <span style={{display:'flex', alignItems:'center', gap:6, fontSize:12.5, color:COR.cinza}}><span style={{width:13, height:13, borderRadius:4, background:'#EFF1F4', display:'inline-block'}}/> Sem checklist</span>
+        {onEditarDia && <span style={{fontSize:12, color:COR.azul, fontWeight:600, marginLeft:'auto'}}>Clique num dia para editar/lançar</span>}
       </div>
 
       <div style={{display:'flex', flexWrap:'wrap', gap:22}}>
@@ -2325,13 +2361,20 @@ function CalendarioMaquina({ maquina, registros, ini, fim }) {
                   const iso = `${ano}-${String(m+1).padStart(2,'0')}-${String(dia).padStart(2,'0')}`;
                   const dentro = (!ini || iso >= ini) && (!fim || iso <= fim);
                   const cor = corDia(iso);
+                  const regsDoDia = porDia[iso] || [];
+                  // registro de referência p/ editar: o último não-complemento do dia, ou o primeiro
+                  const regRef = [...regsDoDia].reverse().find(r => !r.complemento) || regsDoDia[0] || null;
+                  const podeEditar = !!onEditarDia;
                   return (
-                    <div key={i} title={iso.split('-').reverse().join('/')} style={{
-                      aspectRatio:'1', display:'flex', alignItems:'center', justifyContent:'center',
-                      borderRadius:6, fontSize:11.5, fontWeight:700,
-                      background: dentro ? cor.bg : '#F8FAFC', color: dentro ? cor.fg : '#CBD5E1',
-                      opacity: dentro ? 1 : .5,
-                    }}>{dia}</div>
+                    <div key={i} title={iso.split('-').reverse().join('/') + (podeEditar ? ' — clique para editar' : '')}
+                      onClick={podeEditar ? () => onEditarDia(iso, regRef) : undefined}
+                      style={{
+                        aspectRatio:'1', display:'flex', alignItems:'center', justifyContent:'center',
+                        borderRadius:6, fontSize:11.5, fontWeight:700,
+                        background: dentro ? cor.bg : '#F8FAFC', color: dentro ? cor.fg : '#CBD5E1',
+                        opacity: dentro ? 1 : .5,
+                        cursor: podeEditar ? 'pointer' : 'default',
+                      }}>{dia}</div>
                   );
                 })}
               </div>
@@ -2343,7 +2386,7 @@ function CalendarioMaquina({ maquina, registros, ini, fim }) {
   );
 }
 
-function TelaRelatorios({ registros, maquinas, onVoltar }) {
+function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste }) {
   const hoje = new Date().toISOString().slice(0,10);
   const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
   const [ini, setIni] = useState(mesPassado);
@@ -2351,6 +2394,7 @@ function TelaRelatorios({ registros, maquinas, onVoltar }) {
   const [fObra, setFObra] = useState('todas');
   const [fMaquina, setFMaquina] = useState('todas');
   const [fEmpresa, setFEmpresa] = useState('todas');
+  const [editandoDia, setEditandoDia] = useState(null);
 
   const obras = Array.from(new Set(maquinas.map(m => m.obra).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
   // lista de empresas (Axial + locadoras cadastradas)
@@ -2430,7 +2474,7 @@ function TelaRelatorios({ registros, maquinas, onVoltar }) {
       </div>
 
       {fMaquina !== 'todas' && maquinasFiltradas.length === 1 && (
-        <CalendarioMaquina maquina={maquinasFiltradas[0]} registros={registrosFiltrados} ini={ini} fim={fim} />
+        <CalendarioMaquina maquina={maquinasFiltradas[0]} registros={registrosFiltrados} ini={ini} fim={fim} onEditarDia={(data, registro) => setEditandoDia({ maquina: maquinasFiltradas[0], data, registro })} />
       )}
 
       {faltas.length > 0 && (
@@ -2507,6 +2551,14 @@ function TelaRelatorios({ registros, maquinas, onVoltar }) {
       <p style={{fontSize:12, color:COR.cinza, marginTop:16, lineHeight:1.5}}>
         Os números refletem os dias em que houve registro do operador. Como o check é feito no início do dia, o trabalho entre duas leituras é creditado no dia anterior. Dias sem nenhum registro não entram na conta de funcionando nem parado.
       </p>
+
+      {editandoDia && (
+        <EditorStatusDia
+          maquina={editandoDia.maquina} data={editandoDia.data} registro={editandoDia.registro}
+          onFechar={() => setEditandoDia(null)}
+          onSalvar={async (dados) => { await onSalvarAjuste(editandoDia, dados); setEditandoDia(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -2728,15 +2780,81 @@ function CardRevisao({ maquinas, compacto }) {
 }
 
 // ============================================================
+// Editor de status de um dia (admin) — edita registro existente ou cria do zero
+function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
+  const [status, setStatus] = useState(registro ? registro.status : 'funcional');
+  const [motivo, setMotivo] = useState(registro ? (registro.motivoParada || '') : '');
+  const [obs, setObs] = useState(registro ? (registro.observacao || '') : '');
+  const [salvando, setSalvando] = useState(false);
+
+  async function salvar() {
+    if (status === 'nao_funcional' && !motivo) return;
+    setSalvando(true);
+    await onSalvar({ status, motivo: status === 'nao_funcional' ? motivo : '', observacao: obs });
+    setSalvando(false);
+  }
+  const dataBR = data.split('-').reverse().join('/');
+
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.55)', zIndex:600, display:'flex', alignItems:'center', justifyContent:'center', padding:18}} onClick={onFechar}>
+      <div style={{...S.card, maxWidth:440, width:'100%', maxHeight:'90vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14}}>
+          <div>
+            <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul}}>{registro ? 'Editar status' : 'Lançar status'}</h3>
+            <p style={{margin:'3px 0 0', fontSize:13, color:COR.cinza}}>{maquina.codigo ? maquina.codigo+' · ' : ''}{maquina.descricao} · {dataBR}</p>
+          </div>
+          <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:9}}><X size={18}/></button>
+        </div>
+
+        {!registro && (
+          <div style={{background:'#EFF6FF', border:'1px solid #BFDBFE', borderRadius:10, padding:'10px 12px', marginBottom:14, fontSize:13, color:'#1E40AF'}}>
+            Este dia não tinha registro. Você está criando o status manualmente.
+          </div>
+        )}
+
+        <label style={S.rotulo}>Status da máquina</label>
+        <div style={{display:'flex', gap:10, marginBottom:14}}>
+          <button onClick={() => setStatus('funcional')} style={{flex:1, padding:'12px', borderRadius:11, border:`1.5px solid ${status==='funcional'?COR.verde:COR.borda}`, background: status==='funcional'?COR.verdeBg:'#fff', color: status==='funcional'?COR.verde:COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:6}}><CheckCircle2 size={17}/> Funcional</button>
+          <button onClick={() => setStatus('nao_funcional')} style={{flex:1, padding:'12px', borderRadius:11, border:`1.5px solid ${status==='nao_funcional'?COR.vermelho:COR.borda}`, background: status==='nao_funcional'?COR.vermelhoBg:'#fff', color: status==='nao_funcional'?COR.vermelho:COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:6}}><AlertTriangle size={17}/> Não funcional</button>
+        </div>
+
+        {status === 'nao_funcional' && (
+          <div style={{marginBottom:14}}>
+            <label style={S.rotulo}>Motivo da parada</label>
+            <div style={{display:'flex', flexWrap:'wrap', gap:8}}>
+              {MOTIVOS_PARADA.map(mt => (
+                <button key={mt} onClick={() => setMotivo(mt)} style={{padding:'8px 14px', borderRadius:9, border:`1.5px solid ${motivo===mt?COR.vermelho:COR.borda}`, background: motivo===mt?COR.vermelhoBg:'#fff', color: motivo===mt?COR.vermelho:COR.texto, fontSize:13.5, fontWeight:600, cursor:'pointer', fontFamily:'inherit'}}>{mt}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <label style={S.rotulo}>Observação</label>
+        <textarea value={obs} rows={2} placeholder="Opcional" style={{...S.campo, resize:'vertical', marginBottom:16}} onChange={e => setObs(e.target.value)}/>
+
+        <div style={{display:'flex', gap:10}}>
+          <button onClick={salvar} disabled={salvando || (status==='nao_funcional' && !motivo)} style={{...S.botaoPrim, flex:1, opacity:(salvando || (status==='nao_funcional' && !motivo))?.6:1}}>
+            <Save size={17}/> {salvando ? 'Salvando…' : 'Salvar'}
+          </button>
+          <button onClick={onFechar} style={S.botaoSec}>Cancelar</button>
+        </div>
+        <p style={{fontSize:11.5, color:COR.cinza, marginTop:12, lineHeight:1.5}}>O registro ficará marcado como ajuste do administrador. Isso não altera o cálculo de km/horas (baseado nas leituras de horímetro).</p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // ADMIN: TELA DE REGISTROS (checklists recebidos)
 // ============================================================
-function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
+function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalvarAjuste }) {
   const hoje = new Date().toISOString().slice(0,10);
   const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
   const [ini, setIni] = useState(mesPassado);
   const [fim, setFim] = useState(hoje);
   const [expandido, setExpandido] = useState(null);
   const [mostrarExcluir, setMostrarExcluir] = useState(false);
+  const [editando, setEditando] = useState(null); // { maquina, data, registro }
   const [senha, setSenha] = useState('');
   const [erroSenha, setErroSenha] = useState('');
   const [excluindo, setExcluindo] = useState(false);
@@ -2825,8 +2943,8 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
             return (
               <div key={r.id} style={{...S.card, padding:0, overflow:'hidden'}}>
                 <div onClick={() => setExpandido(aberto ? null : r.id)} style={{display:'flex', alignItems:'center', gap:12, padding:'13px 16px', cursor:'pointer'}}>
-                  <div style={{width:40, height:40, borderRadius:10, background: func?COR.verdeBg:COR.vermelhoBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
-                    {func ? <CheckCircle2 size={20} color={COR.verde}/> : <AlertTriangle size={20} color={COR.vermelho}/>}
+                  <div style={{width:40, height:40, borderRadius:10, background: r.status==='sem_atividade'?'#F1F5F9':(func?COR.verdeBg:COR.vermelhoBg), display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                    {r.status==='sem_atividade' ? <CircleSlash size={20} color="#64748B"/> : (func ? <CheckCircle2 size={20} color={COR.verde}/> : <AlertTriangle size={20} color={COR.vermelho}/>)}
                   </div>
                   <div style={{flex:1, minWidth:0}}>
                     <div style={{fontSize:15, fontWeight:700, color:COR.texto}}>{r.maquinaCodigo ? r.maquinaCodigo+' · ' : ''}{r.maquinaDescricao}</div>
@@ -2834,12 +2952,11 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
                       {r.retroativo
                         ? <span><Clock size={11} style={{verticalAlign:-1}}/> Ref. {(r.dataRef || '').split('-').reverse().slice(0,2).join('/')} (retroativo) · {r.operador || 'sem nome'}</span>
                         : <span>{dataHoraBR(r.criadoEm)}{r.complemento ? ' (complemento)' : ''} · {r.operador || 'sem nome'}</span>}
+                      {r.ajusteAdmin && <span style={{color:'#7C3AED', fontWeight:700}}> · ajuste do admin</span>}
                     </div>
                   </div>
                   <div style={{display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end'}}>
-                    {func
-                      ? <Badge cor={COR.verde} bg={COR.verdeBg}>Funcional</Badge>
-                      : <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>{r.motivoParada || 'Parada'}</Badge>}
+                    <BadgeStatusReg registro={r}/>
                     {r.validacaoStatus === 'validada'
                       ? <Badge cor={COR.verde} bg={COR.verdeBg}><CheckCircle2 size={10}/> Validada</Badge>
                       : r.validacaoStatus === 'invalidada'
@@ -2891,9 +3008,14 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
                         {(r.fotosExtras||[]).map((u,i) => <a key={i} href={u} target="_blank" rel="noopener"><img src={u} alt={'f'+i} style={{width:70, height:70, objectFit:'cover', borderRadius:8, border:`1px solid ${COR.borda}`}}/></a>)}
                       </div>
                     )}
-                    <button onClick={() => gerarPdfRegistro(r, mapaMaquinas[r.maquinaId] || { codigo:r.maquinaCodigo, descricao:r.maquinaDescricao, obra:r.obra, possuiHorimetro:true, tipo:'axial' })} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5}}>
-                      <Download size={16}/> Baixar PDF deste registro
-                    </button>
+                    <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+                      <button onClick={() => gerarPdfRegistro(r, mapaMaquinas[r.maquinaId] || { codigo:r.maquinaCodigo, descricao:r.maquinaDescricao, obra:r.obra, possuiHorimetro:true, tipo:'axial' })} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5}}>
+                        <Download size={16}/> Baixar PDF deste registro
+                      </button>
+                      <button onClick={() => setEditando({ maquina: mapaMaquinas[r.maquinaId] || { id:r.maquinaId, codigo:r.maquinaCodigo, descricao:r.maquinaDescricao, obra:r.obra }, data: (r.dataRef || new Date(r.criadoEm).toISOString().slice(0,10)), registro: r })} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5}}>
+                        <Edit size={16}/> Editar status
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -2922,6 +3044,14 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo }) {
             </div>
           </div>
         </div>
+      )}
+
+      {editando && (
+        <EditorStatusDia
+          maquina={editando.maquina} data={editando.data} registro={editando.registro}
+          onFechar={() => setEditando(null)}
+          onSalvar={async (dados) => { await onSalvarAjuste(editando, dados); setEditando(null); }}
+        />
       )}
     </div>
   );
@@ -3133,16 +3263,14 @@ function ValidadorRegistros({ obra, registros, maquinas, onValidar, onVoltar }) 
             return (
               <div key={r.id} style={{...S.card, padding:0, overflow:'hidden'}}>
                 <div onClick={() => setExpandido(aberto?null:r.id)} style={{display:'flex', alignItems:'center', gap:12, padding:'13px 16px', cursor:'pointer'}}>
-                  <div style={{width:40, height:40, borderRadius:10, background: func?COR.verdeBg:COR.vermelhoBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
-                    {func ? <CheckCircle2 size={20} color={COR.verde}/> : <AlertTriangle size={20} color={COR.vermelho}/>}
+                  <div style={{width:40, height:40, borderRadius:10, background: r.status==='sem_atividade'?'#F1F5F9':(func?COR.verdeBg:COR.vermelhoBg), display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                    {r.status==='sem_atividade' ? <CircleSlash size={20} color="#64748B"/> : (func ? <CheckCircle2 size={20} color={COR.verde}/> : <AlertTriangle size={20} color={COR.vermelho}/>)}
                   </div>
                   <div style={{flex:1, minWidth:0}}>
                     <div style={{fontSize:15, fontWeight:700, color:COR.texto}}>{r.maquinaCodigo ? r.maquinaCodigo+' · ' : ''}{r.maquinaDescricao}</div>
                     <div style={{fontSize:12.5, color:COR.cinza, marginTop:1}}>{r.retroativo ? `Ref. ${(r.dataRef||'').split('-').reverse().slice(0,2).join('/')} (retroativo)` : dataHoraBR(r.criadoEm)} · {r.operador || 'sem nome'}</div>
                   </div>
-                  {func
-                    ? <Badge cor={COR.verde} bg={COR.verdeBg}>Funcional</Badge>
-                    : <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>{r.motivoParada || 'Parada'}</Badge>}
+                  <BadgeStatusReg registro={r}/>
                   <ChevronDown size={18} color={COR.cinza} style={{transform: aberto?'rotate(180deg)':'none', transition:'transform .15s', flexShrink:0}}/>
                 </div>
 
@@ -3509,6 +3637,46 @@ function App() {
     setLogadoValidador(false); setValObra(null); setModo('inicial');
   }
 
+  // --- Ajuste manual do admin (editar/criar status de um dia) ---
+  async function salvarAjusteRegistro(ctx, dados) {
+    if (!supabaseClient) return;
+    const agora = new Date().toISOString();
+    if (ctx.registro && ctx.registro.id) {
+      // edita registro existente
+      await supabaseClient.from('registros').update({
+        status: dados.status,
+        motivo_parada: dados.status === 'nao_funcional' ? dados.motivo : null,
+        observacao: dados.observacao || null,
+        ajuste_admin: true,
+        ajuste_admin_em: agora,
+      }).eq('id', ctx.registro.id);
+      aviso('Status atualizado.');
+    } else {
+      // cria registro do zero para o dia (sem leitura de horímetro)
+      const m = ctx.maquina;
+      await supabaseClient.from('registros').insert({
+        maquina_id: m.id,
+        maquina_codigo: m.codigo,
+        maquina_descricao: m.descricao,
+        obra: m.obra,
+        operador: 'Administrador',
+        status: dados.status,
+        horimetro: null,
+        horimetro_na: true,
+        motivo_parada: dados.status === 'nao_funcional' ? dados.motivo : null,
+        observacao: dados.observacao || null,
+        checklist: [],
+        retroativo: true,
+        data_ref: ctx.data,
+        ajuste_admin: true,
+        ajuste_admin_em: agora,
+        criado_em: new Date(ctx.data + 'T12:00:00').toISOString(),
+      });
+      aviso('Status lançado.');
+    }
+    recarregar();
+  }
+
   // --- Configuração do checklist (admin) ---
   async function salvarChecklist(itens) {
     await salvarChecklistConfig(itens);
@@ -3720,12 +3888,14 @@ function App() {
           <TelaRelatorios
             registros={registros} maquinas={maquinas}
             onVoltar={() => setTela('lista')}
+            onSalvarAjuste={salvarAjusteRegistro}
           />
         )}
         {tela === 'registros' && (
           <TelaRegistros
             registros={registros} maquinas={maquinas}
             onVoltar={() => setTela('lista')}
+            onSalvarAjuste={salvarAjusteRegistro}
             onExcluirPeriodo={async (ini, fim, obra) => {
               const r = await excluirRegistrosPeriodo(registros, ini, fim, obra);
               await recarregar();
