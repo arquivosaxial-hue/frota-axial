@@ -575,11 +575,11 @@ function checklistDaMaquina(maquina, padrao) {
   return padrao || CHECKLIST_PADRAO;
 }
 
-// Data mínima a partir da qual recuperamos dias atrasados
-const DATA_INICIO_RETROATIVO = '2026-06-10';
+// Quantos dias para trás o operador pode recuperar um checklist atrasado
+const DIAS_RETROATIVO = 30;
 
-// Dias (YYYY-MM-DD) sem checklist para a máquina: do 10/06 em diante,
-// últimos 7 dias, SEM contar hoje, e que ainda não tenham registro.
+// Dias (YYYY-MM-DD) sem checklist para a máquina: últimos 30 dias,
+// SEM contar hoje, e que ainda não tenham registro.
 function diasPendentesMaquina(maquina, registros) {
   if (!maquina) return [];
   const hoje = new Date(); hoje.setHours(0,0,0,0);
@@ -589,13 +589,12 @@ function diasPendentesMaquina(maquina, registros) {
       .map(r => (r.dataRef || new Date(r.criadoEm).toISOString().slice(0,10)))
   );
   const pendentes = [];
-  for (let i = 1; i <= 7; i++) {                 // i=1 => ontem; nunca inclui hoje
+  for (let i = 1; i <= DIAS_RETROATIVO; i++) {     // i=1 => ontem; nunca inclui hoje
     const d = new Date(hoje); d.setDate(d.getDate() - i);
     const iso = d.toISOString().slice(0,10);
-    if (iso < DATA_INICIO_RETROATIVO) continue;  // só do 10/06 em diante
     if (!diasComRegistro.has(iso)) pendentes.push(iso);
   }
-  return pendentes.sort();                        // mais antigo primeiro
+  return pendentes.sort();                          // mais antigo primeiro
 }
 
 async function lerChecklistConfig() {
