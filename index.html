@@ -2999,15 +2999,25 @@ function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onVoltar }) {
     const nome = r.obra || 'Sem obra';
     pendentesPorObra[nome] = (pendentesPorObra[nome] || 0) + 1;
   }
-  // conta máquinas sem checklist hoje, por obra
+  // máquinas sem checklist hoje e com dias atrasados, por obra
   const hoje = new Date().toISOString().slice(0,10);
   const comCheckHoje = new Set(registros.filter(r => new Date(r.criadoEm).toISOString().slice(0,10) === hoje).map(r => r.maquinaId));
   const semCheckPorObra = {};
+  const atrasoPorObra = {};
   for (const m of maquinas.filter(x => x.ativa)) {
     const nome = m.obra || 'Sem obra';
     if (!comCheckHoje.has(m.id)) semCheckPorObra[nome] = (semCheckPorObra[nome] || 0) + 1;
+    if (diasPendentesMaquina(m, registros).length > 0) atrasoPorObra[nome] = (atrasoPorObra[nome] || 0) + 1;
   }
   const obras = Array.from(new Set(maquinas.filter(m=>m.ativa).map(m => m.obra || 'Sem obra'))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+
+  function Pilula({ n, texto, fg, bg }) {
+    return (
+      <span style={{display:'inline-flex', alignItems:'center', gap:5, fontSize:12, fontWeight:700, color:fg, background:bg, padding:'3px 10px', borderRadius:999}}>
+        <b style={{fontSize:13}}>{n}</b> {texto}
+      </span>
+    );
+  }
 
   return (
     <div style={{maxWidth:560, margin:'0 auto'}}>
@@ -3022,19 +3032,24 @@ function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onVoltar }) {
         {obras.map(nome => {
           const pend = pendentesPorObra[nome] || 0;
           const semCheck = semCheckPorObra[nome] || 0;
-          const partes = [];
-          if (pend > 0) partes.push(`${pend} p/ validar`);
-          if (semCheck > 0) partes.push(`${semCheck} sem checklist`);
+          const atraso = atrasoPorObra[nome] || 0;
+          const temAlgo = pend > 0 || semCheck > 0 || atraso > 0;
           return (
-            <button key={nome} onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${COR.borda}`, borderRadius:14, padding:'16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+            <button key={nome} onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${temAlgo ? '#FDE68A' : COR.borda}`, borderRadius:14, padding:'15px 16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
               <div style={{width:42, height:42, borderRadius:11, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><Building size={22} color={COR.azul}/></div>
               <div style={{flex:1, minWidth:0}}>
-                <div style={{fontSize:15.5, fontWeight:700, color:COR.texto}}>{nome}</div>
-                <div style={{fontSize:12.5, color: partes.length?COR.amarelo:COR.cinza, marginTop:2, fontWeight:600}}>{partes.length ? partes.join(' · ') : 'Tudo em dia'}</div>
+                <div style={{fontSize:15.5, fontWeight:700, color:COR.texto, marginBottom: temAlgo ? 6 : 0}}>{nome}</div>
+                {temAlgo ? (
+                  <div style={{display:'flex', flexWrap:'wrap', gap:6}}>
+                    {pend > 0 && <Pilula n={pend} texto="p/ validar" fg="#92400E" bg="#FDE68A"/>}
+                    {semCheck > 0 && <Pilula n={semCheck} texto="sem checklist hoje" fg="#991B1B" bg={COR.vermelhoBg}/>}
+                    {atraso > 0 && <Pilula n={atraso} texto="c/ atraso" fg="#9A3412" bg="#FFEDD5"/>}
+                  </div>
+                ) : (
+                  <div style={{fontSize:12.5, color:COR.verde, fontWeight:600, display:'flex', alignItems:'center', gap:4}}><CheckCircle2 size={13}/> Tudo em dia</div>
+                )}
               </div>
-              {pend>0 && <span style={{fontSize:12.5, fontWeight:800, color:'#92400E', background:'#FDE68A', padding:'2px 9px', borderRadius:999}}>{pend}</span>}
-              {semCheck>0 && <span style={{fontSize:12.5, fontWeight:800, color:'#991B1B', background:COR.vermelhoBg, padding:'2px 9px', borderRadius:999}}>{semCheck}</span>}
-              <ChevronRight size={20} color={COR.cinza}/>
+              <ChevronRight size={20} color={COR.cinza} style={{flexShrink:0}}/>
             </button>
           );
         })}
@@ -3067,6 +3082,13 @@ function ValidadorRegistros({ obra, registros, maquinas, onValidar, onVoltar }) 
   const semChecklistHoje = maquinas
     .filter(m => m.ativa && (m.obra || 'Sem obra') === obra && !maquinasComCheckHoje.has(m.id))
     .sort((a,b) => (a.codigo||a.descricao).localeCompare(b.codigo||b.descricao, 'pt-BR'));
+
+  // máquinas da obra com dias retroativos faltando (mesma janela do operador)
+  const atrasadasObra = maquinas
+    .filter(m => m.ativa && (m.obra || 'Sem obra') === obra)
+    .map(m => ({ maquina: m, dias: diasPendentesMaquina(m, registros) }))
+    .filter(x => x.dias.length > 0)
+    .sort((a,b) => (a.maquina.codigo||a.maquina.descricao).localeCompare(b.maquina.codigo||b.maquina.descricao, 'pt-BR'));
 
   async function validar(r) {
     setProcessando(r.id);
@@ -3181,6 +3203,39 @@ function ValidadorRegistros({ obra, registros, maquinas, onValidar, onVoltar }) 
                 <div style={{fontSize:12.5, color:COR.cinza, marginTop:1}}>Aguardando checklist do dia</div>
               </div>
               <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>Pendente</Badge>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* SEÇÃO 3 — Dias atrasados (retroativos) */}
+      <div style={{display:'flex', alignItems:'center', gap:8, margin:'24px 2px 10px'}}>
+        <Clock size={16} color={COR.amarelo}/>
+        <span style={{fontSize:14.5, fontWeight:800, color:COR.texto}}>Dias atrasados</span>
+        <span style={{fontSize:12.5, fontWeight:700, color:'#92400E', background:'#FDE68A', padding:'1px 9px', borderRadius:999}}>{atrasadasObra.length}</span>
+      </div>
+
+      {atrasadasObra.length === 0 ? (
+        <div style={{...S.card, textAlign:'center', padding:'22px 16px', color:COR.cinza}}>
+          <CheckCircle2 size={32} color={COR.verde}/>
+          <p style={{marginTop:8, fontWeight:600, fontSize:14}}>Nenhum dia atrasado pendente.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:8}}>
+          {atrasadasObra.map(({ maquina, dias }) => (
+            <div key={maquina.id} style={{...S.card, padding:'12px 16px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:12}}>
+                <div style={{width:40, height:40, borderRadius:10, background:COR.amareloBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                  <Clock size={20} color={COR.amarelo}/>
+                </div>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontSize:15, fontWeight:700, color:COR.texto}}>{maquina.codigo ? maquina.codigo+' · ' : ''}{maquina.descricao}</div>
+                  <div style={{fontSize:12, color:COR.cinza, marginTop:2}}>
+                    {dias.slice(0,12).map(d => d.split('-').reverse().slice(0,2).join('/')).join(', ')}{dias.length > 12 ? '…' : ''}
+                  </div>
+                </div>
+                <span style={{fontSize:12.5, fontWeight:800, color:'#92400E', background:'#FDE68A', padding:'2px 9px', borderRadius:999, whiteSpace:'nowrap'}}>{dias.length} dia(s)</span>
+              </div>
             </div>
           ))}
         </div>
