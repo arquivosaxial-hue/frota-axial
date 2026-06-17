@@ -1,0 +1,19 @@
+name: Keep Supabase Alive (frota-axial)
+
+on:
+  schedule:
+    - cron: '0 9 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pingar o Supabase
+        run: |
+          echo "Enviando ping para manter o projeto ativo..."
+          curl -s -o /dev/null -w "Status: %{http_code}\n" \
+            "https://aqztghqxwatxgaouulvh.supabase.co/rest/v1/maquinas?select=id&limit=1" \
+            -H "apikey: sb_publishable_pgXyiVx2Z0cnl7-cxyOgTA_Rg3KaqOY" \
+            -H "Authorization: Bearer sb_publishable_pgXyiVx2Z0cnl7-cxyOgTA_Rg3KaqOY"
+          echo "Ping concluido."
