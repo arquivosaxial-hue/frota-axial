@@ -463,6 +463,22 @@ function cacheLer(chave, padrao) {
   catch (e) { return padrao; }
 }
 
+// Registros feitos NESTE aparelho hoje (para a tela inicial do operador)
+function meusRegistrosHoje() {
+  const hoje = new Date().toISOString().slice(0,10);
+  const todos = cacheLer('meus_registros', []);
+  // mantém só os de hoje (limpa os antigos)
+  const doDia = todos.filter(r => (r.dia === hoje));
+  if (doDia.length !== todos.length) { try { localStorage.setItem('cache_meus_registros', JSON.stringify(doDia)); } catch(e){} }
+  return doDia;
+}
+function adicionarMeuRegistro(item) {
+  const hoje = new Date().toISOString().slice(0,10);
+  const atuais = meusRegistrosHoje();
+  atuais.unshift({ ...item, dia: hoje });
+  try { localStorage.setItem('cache_meus_registros', JSON.stringify(atuais.slice(0, 50))); } catch(e){}
+}
+
 // Promise com tempo limite — evita ficar "Carregando…" pra sempre offline
 function comTimeout(promise, ms) {
   return Promise.race([
@@ -1350,7 +1366,18 @@ const S = {
     padding:'12px 18px', fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
   },
   card: { background:COR.card, border:`1px solid ${COR.borda}`, borderRadius:14, padding:16, boxShadow:'0 1px 2px rgba(16,24,40,.04)' },
+  cardFiltro: { background:'#EFF4FB', border:`1.5px solid #BFD4EC`, borderRadius:14, padding:16, boxShadow:'0 1px 2px rgba(16,24,40,.04)' },
 };
+
+// Cabeçalho padrão dos blocos de filtros
+function CabecalhoFiltros({ texto }) {
+  return (
+    <div style={{display:'flex', alignItems:'center', gap:7, marginBottom:12, width:'100%'}}>
+      <Filter size={15} color={COR.azul}/>
+      <span style={{fontSize:12.5, fontWeight:800, color:COR.azul, textTransform:'uppercase', letterSpacing:.3}}>{texto || 'Filtros'}</span>
+    </div>
+  );
+}
 
 function Badge({ cor, bg, children, style }) {
   return (
@@ -1686,7 +1713,8 @@ function TelaMaquinas({ maquinas, obras, onNova, onEditar, onToggleAtiva, onAbri
         <div style={{margin:'16px 0 0'}}><CardRevisao maquinas={maquinas} compacto /></div>
       )}
 
-      <div style={{margin:'18px 0', display:'flex', flexDirection:'column', gap:10}}>
+      <div style={{...S.cardFiltro, margin:'18px 0', display:'flex', flexDirection:'column', gap:10}}>
+        <CabecalhoFiltros texto="Buscar e filtrar" />
         <div style={{position:'relative'}}>
           <Search size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}} />
           <input value={busca} placeholder="Buscar por código, descrição, série…" style={{...S.campo, paddingLeft:42}} onChange={e => setBusca(e.target.value)} />
@@ -1765,7 +1793,7 @@ function LoginAdmin({ onEntrar, onVoltar }) {
 // ============================================================
 
 // --- Tela inicial: escolher Operador ou Administrador ---
-function TelaInicial({ onOperador, onValidador, onAdmin }) {
+function TelaInicial({ onOperador, onValidador, onAdmin, meusRegistros, onBaixarPdf }) {
   return (
     <div style={{minHeight:'100vh', background:`linear-gradient(160deg, ${COR.azul} 0%, #14293f 100%)`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24}}>
       <div style={{width:72, height:72, borderRadius:20, background:'rgba(255,255,255,.12)', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:18}}>
@@ -1802,6 +1830,34 @@ function TelaInicial({ onOperador, onValidador, onAdmin }) {
           <ChevronRight size={20} color="rgba(255,255,255,.6)"/>
         </button>
       </div>
+
+      {meusRegistros && meusRegistros.length > 0 && (
+        <div style={{width:'100%', maxWidth:360, marginTop:26}}>
+          <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:10}}>
+            <FileText size={16} color="rgba(255,255,255,.85)"/>
+            <span style={{fontSize:14, fontWeight:700, color:'rgba(255,255,255,.85)'}}>Meus checklists de hoje</span>
+            <span style={{fontSize:12, fontWeight:800, color:'#fff', background:'rgba(255,255,255,.18)', padding:'1px 9px', borderRadius:999}}>{meusRegistros.length}</span>
+          </div>
+          <div style={{display:'flex', flexDirection:'column', gap:8}}>
+            {meusRegistros.map((item, i) => {
+              const r = item.registro;
+              const func = r.status === 'funcional';
+              return (
+                <div key={i} style={{display:'flex', alignItems:'center', gap:10, background:'rgba(255,255,255,.95)', borderRadius:12, padding:'11px 13px'}}>
+                  <div style={{width:34, height:34, borderRadius:9, background: r.status==='sem_atividade'?'#F1F5F9':(func?COR.verdeBg:COR.vermelhoBg), display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                    {r.status==='sem_atividade' ? <CircleSlash size={17} color="#64748B"/> : (func ? <CheckCircle2 size={17} color={COR.verde}/> : <AlertTriangle size={17} color={COR.vermelho}/>)}
+                  </div>
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontSize:13.5, fontWeight:700, color:COR.texto, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{item.maquina.codigo ? item.maquina.codigo+' · ' : ''}{item.maquina.descricao}</div>
+                    <div style={{fontSize:11.5, color:COR.cinza}}>{dataHoraBR(r.criadoEm)}</div>
+                  </div>
+                  <button onClick={() => onBaixarPdf(item)} style={{background:COR.azul, color:'#fff', border:'none', borderRadius:8, padding:'7px 10px', fontSize:12.5, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', gap:5, fontFamily:'inherit', flexShrink:0}}><Download size={14}/> PDF</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2433,7 +2489,8 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste }) {
         <span style={{marginLeft:'auto', fontSize:13.5, fontWeight:700, color:COR.azul, background:'#EFF6FF', padding:'6px 14px', borderRadius:999, display:'flex', alignItems:'center', gap:6}}><Factory size={15}/> {totalAtivas} máquinas ativas</span>
       </div>
 
-      <div style={{...S.card, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
+      <div style={{...S.cardFiltro, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
+        <CabecalhoFiltros />
         <div>
           <label style={S.rotulo}>De</label>
           <input type="date" value={ini} style={{...S.campo, width:'auto'}} onChange={e => setIni(e.target.value)}/>
@@ -2813,10 +2870,17 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
         )}
 
         <label style={S.rotulo}>Status da máquina</label>
-        <div style={{display:'flex', gap:10, marginBottom:14}}>
+        <div style={{display:'flex', gap:10, marginBottom:10}}>
           <button onClick={() => setStatus('funcional')} style={{flex:1, padding:'12px', borderRadius:11, border:`1.5px solid ${status==='funcional'?COR.verde:COR.borda}`, background: status==='funcional'?COR.verdeBg:'#fff', color: status==='funcional'?COR.verde:COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:6}}><CheckCircle2 size={17}/> Funcional</button>
           <button onClick={() => setStatus('nao_funcional')} style={{flex:1, padding:'12px', borderRadius:11, border:`1.5px solid ${status==='nao_funcional'?COR.vermelho:COR.borda}`, background: status==='nao_funcional'?COR.vermelhoBg:'#fff', color: status==='nao_funcional'?COR.vermelho:COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:6}}><AlertTriangle size={17}/> Não funcional</button>
         </div>
+        <button onClick={() => setStatus('sem_atividade')} style={{width:'100%', marginBottom:14, padding:'12px', borderRadius:11, border:`1.5px solid ${status==='sem_atividade'?'#64748B':COR.borda}`, background: status==='sem_atividade'?'#F1F5F9':'#fff', color: status==='sem_atividade'?'#475569':COR.texto, fontSize:14.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:6}}><CircleSlash size={17}/> Não houve atividade</button>
+
+        {status === 'sem_atividade' && (
+          <div style={{background:'#F1F5F9', border:'1px solid #E2E8F0', borderRadius:10, padding:'10px 12px', marginBottom:14, fontSize:13, color:'#475569'}}>
+            Registrando que não houve atividade neste dia. Não é necessário motivo nem checklist.
+          </div>
+        )}
 
         {status === 'nao_funcional' && (
           <div style={{marginBottom:14}}>
@@ -2859,9 +2923,12 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
   const [erroSenha, setErroSenha] = useState('');
   const [excluindo, setExcluindo] = useState(false);
   const [fObra, setFObra] = useState('todas');
+  const [fMaquina, setFMaquina] = useState('todas');
 
   // obras presentes nos registros
   const obrasNosRegistros = Array.from(new Set(registros.map(r => r.obra).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  // máquinas disponíveis no seletor (respeitam a obra escolhida)
+  const maquinasDoFiltro = maquinas.filter(m => fObra === 'todas' || m.obra === fObra);
 
   const noPeriodo = registros.filter(r => {
     const t = new Date(r.criadoEm).getTime();
@@ -2869,6 +2936,7 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
     const b = fim ? new Date(fim+'T23:59:59').getTime() : Infinity;
     if (t < a || t > b) return false;
     if (fObra !== 'todas' && r.obra !== fObra) return false;
+    if (fMaquina !== 'todas' && r.maquinaId !== fMaquina) return false;
     return true;
   });
 
@@ -2899,7 +2967,8 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
       <div style={{marginBottom:18}}><CardRevisao maquinas={maquinas} /></div>
 
       {/* Filtro de período */}
-      <div style={{...S.card, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
+      <div style={{...S.cardFiltro, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
+        <CabecalhoFiltros />
         <div>
           <label style={S.rotulo}>De</label>
           <input type="date" value={ini} style={{...S.campo, width:'auto'}} onChange={e => setIni(e.target.value)}/>
@@ -2910,9 +2979,16 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
         </div>
         <div>
           <label style={S.rotulo}>Obra</label>
-          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFObra(e.target.value)}>
+          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFObra(e.target.value); setFMaquina('todas'); }}>
             <option value="todas">Todas as obras</option>
             {obrasNosRegistros.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.rotulo}>Veículo / máquina</label>
+          <select value={fMaquina} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFMaquina(e.target.value)}>
+            <option value="todas">Todos os veículos</option>
+            {maquinasDoFiltro.map(m => <option key={m.id} value={m.id}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</option>)}
           </select>
         </div>
         <span style={{fontSize:13.5, color:COR.cinza, fontWeight:600, alignSelf:'center'}}>{noPeriodo.length} registro(s)</span>
@@ -3380,6 +3456,7 @@ function App() {
   const [logado, setLogado] = useState(false);      // login do admin
   const [logadoValidador, setLogadoValidador] = useState(false);
   const [valObra, setValObra] = useState(null);
+  const [valTela, setValTela] = useState('validar'); // 'validar' | 'relatorios'
   const [maquinas, setMaquinas] = useState([]);
   const [obras, setObras] = useState([]);
   const [registros, setRegistros] = useState([]);
@@ -3397,6 +3474,7 @@ function App() {
   const [opMaquina, setOpMaquina] = useState(null);
   const [opDataRef, setOpDataRef] = useState(null); // null = hoje; 'YYYY-MM-DD' = retroativo
   const [opComplemento, setOpComplemento] = useState(false); // true = complemento de fim de dia
+  const [meusRegistros, setMeusRegistros] = useState(() => meusRegistrosHoje());
   const [opSalvando, setOpSalvando] = useState(false);
   const [opResultado, setOpResultado] = useState(null);
   const [filaPendentes, setFilaPendentes] = useState(0);
@@ -3559,6 +3637,8 @@ function App() {
         if (maquinaUpdate) await supabaseClient.from('maquinas').update(maquinaUpdate).eq('id', opMaquina.id);
 
         const regCompleto = { ...registroDoBanco(linha), fotoUrl, fotosExtras: fotosExtrasUrls };
+        adicionarMeuRegistro({ registro: regCompleto, maquina: { id: opMaquina.id, codigo: opMaquina.codigo, descricao: opMaquina.descricao, obra: opMaquina.obra, unidade: opMaquina.unidade, possuiHorimetro: opMaquina.possuiHorimetro, tipo: opMaquina.tipo } });
+        setMeusRegistros(meusRegistrosHoje());
         setOpResultado({
           maquina: `${opMaquina.codigo ? opMaquina.codigo + ' · ' : ''}${opMaquina.descricao}`,
           indisponivelMinutos: indisponivelMin, registro: regCompleto, maquinaObj: opMaquina, offline: false,
@@ -3725,7 +3805,13 @@ function App() {
     return (
       <>
         <BannerStatus {...bannerProps} />
-        <TelaInicial onOperador={() => { reiniciarOperador(); setModo('operador'); }} onValidador={() => setModo('validador')} onAdmin={() => setModo('admin')} />
+        <TelaInicial
+          onOperador={() => { reiniciarOperador(); setModo('operador'); }}
+          onValidador={() => setModo('validador')}
+          onAdmin={() => setModo('admin')}
+          meusRegistros={meusRegistros}
+          onBaixarPdf={(item) => gerarPdfRegistro(item.registro, item.maquina)}
+        />
       </>
     );
   }
@@ -3744,11 +3830,18 @@ function App() {
               <div style={{fontSize:11.5, opacity:.8}}>Validador</div>
             </div>
           </div>
-          <button onClick={sairValidador} style={{background:'rgba(255,255,255,.2)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}><LogOut size={16}/> Sair</button>
+          <div style={{display:'flex', gap:8}}>
+            <button onClick={() => setValTela(valTela === 'relatorios' ? 'validar' : 'relatorios')} style={{background:'rgba(255,255,255,.2)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+              {valTela === 'relatorios' ? <><CheckCircle2 size={16}/> Validação</> : <><BarChart3 size={16}/> Relatórios</>}
+            </button>
+            <button onClick={sairValidador} style={{background:'rgba(255,255,255,.2)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}><LogOut size={16}/> Sair</button>
+          </div>
         </header>
         <main style={{padding:'24px 16px 60px'}}>
           {carregando ? (
             <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando…</p>
+          ) : valTela === 'relatorios' ? (
+            <TelaRelatorios registros={registros} maquinas={maquinas} onVoltar={() => setValTela('validar')} onSalvarAjuste={salvarAjusteRegistro} />
           ) : !valObra ? (
             <ValidadorSelecionaObra maquinas={maquinas} registros={registros} onEscolher={setValObra} onVoltar={sairValidador} />
           ) : (
