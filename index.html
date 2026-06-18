@@ -2581,6 +2581,9 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste }) {
           <button onClick={() => gerarPdfCalendarios(maquinasFiltradas, registrosFiltrados, resumo, ini, fim)} disabled={!maquinasFiltradas.length} style={{...S.botaoSec, opacity: maquinasFiltradas.length?1:.5}}>
             <Calendar size={18}/> Exportar calendário
           </button>
+          <button onClick={() => gerarPdfTodosRegistros(registrosPeriodo, ini, fim, maquinas)} disabled={!registrosPeriodo.length} style={{...S.botaoSec, opacity: registrosPeriodo.length?1:.5}}>
+            <FileText size={18}/> Exportar checklists completos
+          </button>
           <button onClick={() => gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim)} disabled={!resumo.length} style={{...S.botaoPrim, opacity: resumo.length?1:.5}}>
             <Download size={18}/> Baixar PDF do período
           </button>
