@@ -942,6 +942,51 @@ function tabelaMotivosPdf(doc, regsMaquina, y, W, addPageCb) {
   return y + 4;
 }
 
+// Tabela "Trabalho por dia" (data | km ou horas) para uma máquina, usando o resumo já calculado.
+// Mostra só os dias com valor + total. Retorna o novo y.
+function tabelaTrabalhoPorDiaPdf(doc, R, maquina, y, W, addPageCb) {
+  if (!maquina.possuiHorimetro) return y; // sem medidor não há km/horas
+  const unidade = maquina.unidade === 'km' ? 'km' : 'h';
+  const titulo = maquina.unidade === 'km' ? 'QUILOMETRAGEM POR DIA' : 'HORAS POR DIA';
+  const porDia = (R && R.trabalhoPorDia) ? R.trabalhoPorDia : {};
+  const dias = Object.keys(porDia).filter(d => porDia[d] > 0).sort();
+  const H = 297;
+
+  if (y + 16 > H - 12) { addPageCb && addPageCb(); y = 34; }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(60);
+  doc.text(titulo, 14, y); y += 5;
+
+  if (dias.length === 0) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(150);
+    doc.text(`Sem ${maquina.unidade === 'km' ? 'quilometragem' : 'horas'} registrada no período.`, 14, y);
+    return y + 7;
+  }
+
+  const colX = [14, 70];
+  doc.setFillColor(240,242,245); doc.rect(12, y-4, W-24, 6.5, 'F');
+  doc.setFontSize(8.5); doc.setTextColor(70);
+  doc.text('DATA', colX[0], y); doc.text(maquina.unidade === 'km' ? 'KM RODADOS' : 'HORAS TRABALHADAS', colX[1], y);
+  y += 6;
+  doc.setFont('helvetica', 'normal'); doc.setTextColor(40);
+  let total = 0;
+  for (const d of dias) {
+    if (y > H - 14) { addPageCb && addPageCb(); y = 34; }
+    const v = porDia[d];
+    total += v;
+    doc.text(d.split('-').reverse().slice(0,2).join('/'), colX[0], y);
+    doc.text(`${Math.round(v * 10) / 10} ${unidade}`, colX[1], y);
+    y += 5.5;
+    doc.setDrawColor(235); doc.line(12, y-2, W-12, y-2);
+  }
+  // total
+  if (y > H - 14) { addPageCb && addPageCb(); y = 34; }
+  doc.setFont('helvetica', 'bold'); doc.setTextColor(27,58,92);
+  doc.text('TOTAL', colX[0], y);
+  doc.text(`${Math.round(total * 10) / 10} ${unidade}`, colX[1], y);
+  y += 6;
+  return y + 2;
+}
+
 async function gerarPdfRegistro(reg, maquina) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
@@ -1299,6 +1344,9 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
     }
     y += 12;
 
+    // tabela de km/horas por dia desta máquina
+    y = tabelaTrabalhoPorDiaPdf(doc, R, maquina, y, W, () => { doc.addPage(); cabecalho(); });
+
     // tabela de motivos da parada desta máquina (no período)
     y = tabelaMotivosPdf(doc, registros.filter(r => r.maquinaId === maquina.id), y, W, () => { doc.addPage(); cabecalho(); });
   }
@@ -1348,6 +1396,21 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
     y += 5;
     doc.setDrawColor(235); doc.line(12, y-1.5, W-12, y-1.5);
     y += 2;
+  }
+
+  // Trabalho por máquina (km/horas por dia)
+  y += 4; if (y > 240) { doc.addPage(); y = 20; }
+  const maquinasComMedidor = resumo.filter(r => r.maquina.possuiHorimetro);
+  if (maquinasComMedidor.length) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(30);
+    doc.text('Trabalho por máquina (km / horas)', 14, y); y += 8;
+    for (const R of maquinasComMedidor) {
+      if (y > 250) { doc.addPage(); y = 20; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(27,58,92);
+      doc.text(`${R.maquina.codigo ? R.maquina.codigo+' · ' : ''}${R.maquina.descricao}`, 14, y); y += 5;
+      y = tabelaTrabalhoPorDiaPdf(doc, R, R.maquina, y, W, () => { doc.addPage(); });
+      y += 2;
+    }
   }
 
   // Paradas por máquina (data / motivo / causa)
