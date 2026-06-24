@@ -2257,6 +2257,7 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
   const [foto, setFoto] = useState(null);
   const [fotoPreview, setFotoPreview] = useState('');
   const [erro, setErro] = useState('');
+  const [avisoLeitura, setAvisoLeitura] = useState('');
   // checklist: { [item]: { status:'ok'|'nok'|null, obs:'' } }
   const [check, setCheck] = useState({});
   // fotos extras: [{ file, preview }]
@@ -2289,7 +2290,7 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
     setCheck(prev => ({ ...prev, [item]: { ...(prev[item] || { status:null, obs:'' }), [campo]: valor } }));
   }
 
-  function validarEConfirmar() {
+  function validarEConfirmar(forcar) {
     setErro('');
     if (!operador.trim()) { setErro('Informe seu nome.'); return; }
     if (!status) { setErro('Selecione o status da máquina.'); return; }
@@ -2297,10 +2298,27 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
       if (temHorimetro && !na) {
         if (horimetro === '' || isNaN(Number(horimetro))) { setErro('Informe o horímetro atual (ou marque "Não Aplicável").'); return; }
         if (!foto && !dataRef && !complemento) { setErro('A foto do painel é obrigatória para validar o horímetro.'); return; }
+        // --- Validação inteligente da leitura (evita erro de digitação) ---
+        if (!forcar) {
+          const novo = Number(horimetro);
+          const ultima = (maquina.horimetroAtual != null) ? Number(maquina.horimetroAtual) : null;
+          const suf = unidadeSufixo(maquina);
+          if (ultima != null && ultima > 0) {
+            if (novo < ultima) {
+              setAvisoLeitura(`A leitura informada (${novo}${suf}) é MENOR que a última registrada (${Math.round(ultima)}${suf}). O medidor não costuma diminuir. Confira se digitou certo.`);
+              return;
+            }
+            if (novo - ultima > 1000) {
+              setAvisoLeitura(`A diferença para a última leitura é de ${Math.round(novo - ultima)}${suf} (acima de 1000${suf}). Isso é incomum. Confira se digitou certo.`);
+              return;
+            }
+          }
+        }
       }
     } else if (status === 'nao_funcional') {
       if (!motivo) { setErro('Selecione o motivo da parada.'); return; }
     }
+    setAvisoLeitura('');
     // "sem_atividade": não exige mais nada além do nome.
     const semAtiv = status === 'sem_atividade';
     // monta o checklist final (só itens respondidos) — vazio em sem_atividade
@@ -2409,7 +2427,7 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
                 <label style={S.rotulo}>{unidadeMedidor(maquina)} atual</label>
                 <div style={{position:'relative', opacity: na ? .45 : 1}}>
                   <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
-                  <input type="number" inputMode="numeric" value={horimetro} disabled={na} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => setHorimetro(e.target.value)}/>
+                  <input type="number" inputMode="numeric" value={horimetro} disabled={na} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); }}/>
                   <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{unidadeSufixo(maquina)}</span>
                 </div>
                 <label style={{display:'flex', alignItems:'center', gap:8, marginTop:10, cursor:'pointer', fontSize:14, color:COR.cinza, fontWeight:600}}>
@@ -2525,9 +2543,26 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
 
         {erro && <div style={{color:COR.vermelho, fontSize:13.5, fontWeight:600}}>{erro}</div>}
 
-        <button onClick={validarEConfirmar} disabled={salvando} style={{...S.botaoPrim, opacity: salvando?.7:1}}>
-          {salvando ? 'Enviando…' : <><CheckCircle2 size={18}/> Finalizar registro</>}
-        </button>
+        {avisoLeitura ? (
+          <div style={{background:COR.amareloBg, border:'1.5px solid #FDE68A', borderRadius:12, padding:'14px 16px'}}>
+            <div style={{display:'flex', gap:10, marginBottom:12}}>
+              <AlertTriangle size={20} color={COR.amarelo} style={{flexShrink:0, marginTop:1}}/>
+              <div style={{fontSize:14, color:'#92400E', fontWeight:600, lineHeight:1.45}}>{avisoLeitura}</div>
+            </div>
+            <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
+              <button onClick={() => setAvisoLeitura('')} style={{...S.botaoPrim, flex:1, minWidth:140}}>
+                <Edit size={17}/> Corrigir leitura
+              </button>
+              <button onClick={() => validarEConfirmar(true)} disabled={salvando} style={{...S.botaoSec, flex:1, minWidth:140}}>
+                Está correto, salvar mesmo assim
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => validarEConfirmar(false)} disabled={salvando} style={{...S.botaoPrim, opacity: salvando?.7:1}}>
+            {salvando ? 'Enviando…' : <><CheckCircle2 size={18}/> Finalizar registro</>}
+          </button>
+        )}
       </div>
     </div>
   );
