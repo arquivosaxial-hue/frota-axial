@@ -1490,11 +1490,16 @@ async function gerarPdfTodosRegistros(registrosPeriodo, ini, fim, maquinas) {
     doc.text(`Obra: ${r.obra || '—'}`, 150, y); y += 5.5;
 
     const func = r.status === 'funcional';
+    const semAtiv = r.status === 'sem_atividade';
     doc.setFont('helvetica','bold');
-    doc.setTextColor(func?22:200, func?120:40, 40);
+    if (func) doc.setTextColor(22, 120, 40);
+    else if (semAtiv) doc.setTextColor(71, 85, 105);
+    else doc.setTextColor(200, 40, 40);
     const st = func
       ? `FUNCIONAL · ${r.horimetroNA ? 'medidor N/A' : (r.horimetro!=null ? r.horimetro+unidadeSufixo(mapaM[r.maquinaId]) : 's/ medidor')}`
-      : `NÃO FUNCIONAL · ${r.motivoParada || ''}`;
+      : (semAtiv
+          ? 'NÃO HOUVE ATIVIDADE'
+          : `NÃO FUNCIONAL · ${r.motivoParada || ''}`);
     doc.text(st, 14, y); doc.setTextColor(30); doc.setFont('helvetica','normal'); y += 6;
     if (r.indisponivelMinutos != null) { doc.setTextColor(140,80,10); doc.text(`Indisponibilidade: ${formatarDuracao(r.indisponivelMinutos)}`, 14, y); doc.setTextColor(30); y += 5.5; }
 
@@ -3059,12 +3064,16 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
   const [status, setStatus] = useState(registro ? registro.status : 'funcional');
   const [motivo, setMotivo] = useState(registro ? (registro.motivoParada || '') : '');
   const [obs, setObs] = useState(registro ? (registro.observacao || '') : '');
+  const [horimetro, setHorimetro] = useState(registro && registro.horimetro != null ? String(registro.horimetro) : '');
   const [salvando, setSalvando] = useState(false);
+  const temMedidor = maquina.possuiHorimetro !== false;
+  const sufMed = maquina.unidade === 'km' ? 'km' : 'h';
 
   async function salvar() {
     if (status === 'nao_funcional' && !motivo) return;
     setSalvando(true);
-    await onSalvar({ status, motivo: status === 'nao_funcional' ? motivo : '', observacao: obs });
+    const horiNum = (status === 'funcional' && temMedidor && horimetro !== '' && !isNaN(Number(horimetro))) ? Number(horimetro) : null;
+    await onSalvar({ status, motivo: status === 'nao_funcional' ? motivo : '', observacao: obs, horimetro: horiNum });
     setSalvando(false);
   }
   const dataBR = data.split('-').reverse().join('/');
@@ -3107,6 +3116,17 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
                 <button key={mt} onClick={() => setMotivo(mt)} style={{padding:'8px 14px', borderRadius:9, border:`1.5px solid ${motivo===mt?COR.vermelho:COR.borda}`, background: motivo===mt?COR.vermelhoBg:'#fff', color: motivo===mt?COR.vermelho:COR.texto, fontSize:13.5, fontWeight:600, cursor:'pointer', fontFamily:'inherit'}}>{mt}</button>
               ))}
             </div>
+          </div>
+        )}
+
+        {status === 'funcional' && temMedidor && (
+          <div style={{marginBottom:14}}>
+            <label style={S.rotulo}>{maquina.unidade === 'km' ? 'Hodômetro (km)' : 'Horímetro (horas)'}</label>
+            <div style={{position:'relative'}}>
+              <input type="number" inputMode="decimal" value={horimetro} placeholder="Leitura do medidor" style={{...S.campo, paddingRight:42}} onChange={e => setHorimetro(e.target.value)}/>
+              <span style={{position:'absolute', right:14, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13.5, fontWeight:600}}>{sufMed}</span>
+            </div>
+            <p style={{fontSize:12, color:COR.cinza, margin:'6px 2px 0'}}>Corrija aqui se houve erro de digitação na leitura. Deixe em branco para não alterar.</p>
           </div>
         )}
 
@@ -3938,18 +3958,29 @@ function App() {
   async function salvarAjusteRegistro(ctx, dados) {
     if (!supabaseClient) return;
     const agora = new Date().toISOString();
+    const temHori = dados.horimetro != null && !isNaN(Number(dados.horimetro));
     if (ctx.registro && ctx.registro.id) {
       // edita registro existente
-      await supabaseClient.from('registros').update({
+      const patch = {
         status: dados.status,
         motivo_parada: dados.status === 'nao_funcional' ? dados.motivo : null,
         observacao: dados.observacao || null,
         ajuste_admin: true,
         ajuste_admin_em: agora,
-      }).eq('id', ctx.registro.id);
-      aviso('Status atualizado.');
+      };
+      if (dados.status === 'funcional' && temHori) {
+        patch.horimetro = Number(dados.horimetro);
+        patch.horimetro_na = false;
+      }
+      await supabaseClient.from('registros').update(patch).eq('id', ctx.registro.id);
+      // se for a leitura mais recente da máquina, atualiza o medidor atual
+      if (dados.status === 'funcional' && temHori) {
+        const maqId = (ctx.maquina && ctx.maquina.id) || ctx.registro.maquinaId;
+        if (maqId) await supabaseClient.from('maquinas').update({ horimetro_atual: Number(dados.horimetro) }).eq('id', maqId).then(()=>{}, ()=>{});
+      }
+      aviso('Registro atualizado.');
     } else {
-      // cria registro do zero para o dia (sem leitura de horímetro)
+      // cria registro do zero para o dia
       const m = ctx.maquina;
       await supabaseClient.from('registros').insert({
         maquina_id: m.id,
@@ -3958,8 +3989,8 @@ function App() {
         obra: m.obra,
         operador: 'Administrador',
         status: dados.status,
-        horimetro: null,
-        horimetro_na: true,
+        horimetro: (dados.status === 'funcional' && temHori) ? Number(dados.horimetro) : null,
+        horimetro_na: !(dados.status === 'funcional' && temHori),
         motivo_parada: dados.status === 'nao_funcional' ? dados.motivo : null,
         observacao: dados.observacao || null,
         checklist: [],
@@ -4159,6 +4190,9 @@ function App() {
           </div>
         </div>
         <div style={{display:'flex', alignItems:'center', gap:8}}>
+          <button onClick={() => { setModo('inicial'); setTela('lista'); }} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
+            <HomeIcon size={16}/> Início
+          </button>
           <button onClick={() => setTela(tela === 'registros' ? 'lista' : 'registros')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
             <FileText size={16}/> Registros
           </button>
