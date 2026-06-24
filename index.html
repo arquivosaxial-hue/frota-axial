@@ -4189,25 +4189,36 @@ function App() {
             <div style={{fontSize:11.5, opacity:.7}}>Construtora Axial</div>
           </div>
         </div>
-        <div style={{display:'flex', alignItems:'center', gap:8}}>
-          <button onClick={() => { setModo('inicial'); setTela('lista'); }} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
-            <HomeIcon size={16}/> Início
-          </button>
-          <button onClick={() => setTela(tela === 'registros' ? 'lista' : 'registros')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
-            <FileText size={16}/> Registros
-          </button>
-          <button onClick={() => setTela(tela === 'relatorios' ? 'lista' : 'relatorios')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
-            <BarChart3 size={16}/> Relatórios
-          </button>
-          <button onClick={() => setShowChecklist(true)} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
-            <List size={16}/> Checklist padrão
-          </button>
-          <button onClick={() => setTela(tela === 'checklist_maquina' ? 'lista' : 'checklist_maquina')} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
-            <Factory size={16}/> Checklist/máq.
-          </button>
-          <button onClick={() => { setLogado(false); setModo('inicial'); setTela('lista'); }} style={{background:'rgba(255,255,255,.12)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
-            <LogOut size={16}/> Sair
-          </button>
+        <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+          {(() => {
+            const estA = (alvo) => alvo === tela;
+            const estilo = (ativo) => ({ background: ativo ? 'rgba(255,255,255,.30)' : 'rgba(255,255,255,.12)', color:'#fff', border: ativo ? '1px solid rgba(255,255,255,.5)' : '1px solid transparent', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight: ativo ? 800 : 600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit' });
+            return (
+              <>
+                <button onClick={() => { setModo('inicial'); setTela('lista'); }} style={estilo(false)}>
+                  <HomeIcon size={16}/> Início
+                </button>
+                <button onClick={() => setTela('lista')} style={estilo(estA('lista') || estA('form'))}>
+                  <Factory size={16}/> Máquinas
+                </button>
+                <button onClick={() => setTela('registros')} style={estilo(estA('registros'))}>
+                  <FileText size={16}/> Registros
+                </button>
+                <button onClick={() => setTela('relatorios')} style={estilo(estA('relatorios'))}>
+                  <BarChart3 size={16}/> Relatórios
+                </button>
+                <button onClick={() => setShowChecklist(true)} style={estilo(false)}>
+                  <List size={16}/> Checklist padrão
+                </button>
+                <button onClick={() => setTela('checklist_maquina')} style={estilo(estA('checklist_maquina'))}>
+                  <Factory size={16}/> Checklist/máq.
+                </button>
+                <button onClick={() => { setLogado(false); setModo('inicial'); setTela('lista'); }} style={estilo(false)}>
+                  <LogOut size={16}/> Sair
+                </button>
+              </>
+            );
+          })()}
         </div>
       </header>
 
