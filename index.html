@@ -499,6 +499,39 @@ async function listarMaquinas() {
   } catch (e) { console.warn('listarMaquinas offline/falha', e); return cacheLer('maquinas', []); }
 }
 
+// --- Revisões (histórico de manutenção) ---
+async function listarRevisoes() {
+  if (!supabaseClient || !navigator.onLine) return cacheLer('revisoes', []);
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('revisoes').select('*').order('data_ref', { ascending: false }), 8000);
+    if (error) throw error;
+    const lista = (data || []).map(r => ({
+      id: r.id, maquinaId: r.maquina_id, dataRef: r.data_ref,
+      horimetro: r.horimetro != null ? Number(r.horimetro) : null,
+      observacao: r.observacao || '', criadoEm: r.criado_em,
+    }));
+    cacheSalvar('revisoes', lista);
+    return lista;
+  } catch (e) { console.warn('listarRevisoes falha', e); return cacheLer('revisoes', []); }
+}
+
+async function inserirRevisao(maquina, dados) {
+  if (!supabaseClient) throw new Error('sem conexão');
+  // grava a revisão
+  const { error } = await supabaseClient.from('revisoes').insert({
+    maquina_id: maquina.id,
+    data_ref: dados.dataRef,
+    horimetro: dados.horimetro,
+    observacao: dados.observacao || null,
+  });
+  if (error) throw error;
+  // atualiza o "horímetro da última revisão" da máquina (reinicia a contagem)
+  if (dados.horimetro != null) {
+    await supabaseClient.from('maquinas').update({ horimetro_ultima_manutencao: dados.horimetro }).eq('id', maquina.id);
+  }
+}
+
 async function listarObras() {
   if (!supabaseClient || !navigator.onLine) return cacheLer('obras', []);
   try {
@@ -540,14 +573,32 @@ async function semearSeVazio() {
 // Retorna { cor, rotulo, restante, vencido }
 function calcularManutencao(m) {
   if (m.tipo !== 'axial' || !m.possuiHorimetro) {
-    return { cor: COR.cinza, rotulo: 'N/A', restante: null, vencido: false };
+    return { cor: COR.cinza, rotulo: 'N/A', restante: null, vencido: false, percent: null, desdeUltima: null, intervalo: null };
   }
-  const desdeUltima = m.horimetroAtual - (m.horimetroUltimaManutencao || 0);
+  const desdeUltima = Math.max(0, m.horimetroAtual - (m.horimetroUltimaManutencao || 0));
   const intervalo = m.intervaloManutencao || 500;
   const restante = Math.round(intervalo - desdeUltima);
-  if (restante <= 0)         return { cor: COR.vermelho, rotulo: 'Vencida',  restante, vencido: true };
-  if (restante <= intervalo * 0.15) return { cor: COR.amarelo, rotulo: 'Próxima', restante, vencido: false };
-  return { cor: COR.verde, rotulo: 'Em dia', restante, vencido: false };
+  const percent = intervalo > 0 ? Math.min(100, Math.round((desdeUltima / intervalo) * 100)) : 0;
+  const base = { restante, percent, desdeUltima: Math.round(desdeUltima), intervalo };
+  if (restante <= 0)         return { ...base, cor: COR.vermelho, rotulo: 'Vencida',  vencido: true };
+  if (restante <= intervalo * 0.15) return { ...base, cor: COR.amarelo, rotulo: 'Próxima', vencido: false };
+  return { ...base, cor: COR.verde, rotulo: 'Em dia', vencido: false };
+}
+
+// Barra de progresso de manutenção (reutilizável)
+function BarraManutencao({ man, suf, compacta }) {
+  if (man.percent == null) return null;
+  return (
+    <div style={{marginTop: compacta ? 5 : 8}}>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:4}}>
+        <span style={{fontSize:12, color:COR.cinza, fontWeight:600}}>{man.desdeUltima}{suf} de {man.intervalo}{suf}</span>
+        <span style={{fontSize:12, fontWeight:800, color:man.cor}}>{man.vencido ? `${Math.abs(man.restante)}${suf} vencida` : `faltam ${man.restante}${suf}`}</span>
+      </div>
+      <div style={{height:8, background:'#EEF1F4', borderRadius:999, overflow:'hidden'}}>
+        <div style={{height:'100%', width:`${man.percent}%`, background:man.cor, borderRadius:999, transition:'width .3s'}}/>
+      </div>
+    </div>
+  );
 }
 
 // Rótulos conforme a unidade da máquina (horas/km)
@@ -1782,10 +1833,108 @@ function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
   );
 }
 
+// Modal: registrar uma revisão de manutenção
+function RegistrarRevisao({ maquina, onSalvar, onFechar }) {
+  const hoje = new Date().toISOString().slice(0,10);
+  const [data, setData] = useState(hoje);
+  const [horimetro, setHorimetro] = useState(maquina.horimetroAtual != null ? String(Math.round(maquina.horimetroAtual)) : '');
+  const [obs, setObs] = useState('');
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState('');
+  const suf = unidadeSufixo(maquina);
+
+  async function salvar() {
+    setErro('');
+    if (!data) { setErro('Informe a data da revisão.'); return; }
+    if (horimetro === '' || isNaN(Number(horimetro))) { setErro(`Informe o ${maquina.unidade==='km'?'hodômetro':'horímetro'} da revisão.`); return; }
+    setSalvando(true);
+    try {
+      await onSalvar({ dataRef: data, horimetro: Number(horimetro), observacao: obs.trim() });
+    } catch (e) { setErro('Não foi possível salvar. Verifique a conexão.'); setSalvando(false); }
+  }
+
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.55)', zIndex:600, display:'flex', alignItems:'center', justifyContent:'center', padding:18}} onClick={onFechar}>
+      <div style={{...S.card, maxWidth:440, width:'100%', maxHeight:'90vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14}}>
+          <div>
+            <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul}}>Registrar revisão</h3>
+            <p style={{margin:'3px 0 0', fontSize:13, color:COR.cinza}}>{maquina.codigo ? maquina.codigo+' · ' : ''}{maquina.descricao}</p>
+          </div>
+          <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:9}}><X size={18}/></button>
+        </div>
+
+        <div style={{background:'#EFF4FB', border:'1px solid #BFD4EC', borderRadius:10, padding:'10px 12px', marginBottom:16, fontSize:13, color:'#1E40AF'}}>
+          Ao registrar, a contagem para a próxima revisão reinicia a partir do {maquina.unidade==='km'?'hodômetro':'horímetro'} informado.
+        </div>
+
+        <label style={S.rotulo}>Data da revisão</label>
+        <input type="date" value={data} max={hoje} style={{...S.campo, marginBottom:14}} onChange={e => setData(e.target.value)}/>
+
+        <label style={S.rotulo}>{maquina.unidade==='km'?'Hodômetro':'Horímetro'} na revisão</label>
+        <div style={{position:'relative', marginBottom:14}}>
+          <input type="number" inputMode="decimal" value={horimetro} placeholder="Leitura do medidor" style={{...S.campo, paddingRight:42}} onChange={e => setHorimetro(e.target.value)}/>
+          <span style={{position:'absolute', right:14, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13.5, fontWeight:600}}>{suf}</span>
+        </div>
+
+        <label style={S.rotulo}>O que foi feito (observação)</label>
+        <textarea value={obs} rows={3} placeholder="Ex: troca de óleo, filtros de ar e combustível…" style={{...S.campo, resize:'vertical', marginBottom:16}} onChange={e => setObs(e.target.value)}/>
+
+        {erro && <div style={{color:COR.vermelho, fontSize:13.5, fontWeight:600, marginBottom:12}}>{erro}</div>}
+
+        <div style={{display:'flex', gap:10}}>
+          <button onClick={salvar} disabled={salvando} style={{...S.botaoPrim, flex:1, opacity:salvando?.6:1}}><Wrench size={17}/> {salvando ? 'Salvando…' : 'Registrar revisão'}</button>
+          <button onClick={onFechar} style={S.botaoSec}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Modal: histórico de revisões de uma máquina
+function HistoricoRevisoes({ maquina, revisoes, onFechar }) {
+  const suf = unidadeSufixo(maquina);
+  const lista = (revisoes || []).filter(r => r.maquinaId === maquina.id)
+    .sort((a,b) => (b.dataRef || '').localeCompare(a.dataRef || ''));
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.55)', zIndex:600, display:'flex', alignItems:'center', justifyContent:'center', padding:18}} onClick={onFechar}>
+      <div style={{...S.card, maxWidth:460, width:'100%', maxHeight:'90vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16}}>
+          <div>
+            <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul}}>Histórico de revisões</h3>
+            <p style={{margin:'3px 0 0', fontSize:13, color:COR.cinza}}>{maquina.codigo ? maquina.codigo+' · ' : ''}{maquina.descricao}</p>
+          </div>
+          <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:9}}><X size={18}/></button>
+        </div>
+
+        {lista.length === 0 ? (
+          <div style={{textAlign:'center', padding:'32px 16px', color:COR.cinza}}>
+            <Wrench size={34} color={COR.borda}/>
+            <p style={{marginTop:10, fontWeight:600, fontSize:14}}>Nenhuma revisão registrada ainda.</p>
+          </div>
+        ) : (
+          <div style={{display:'flex', flexDirection:'column', gap:10}}>
+            {lista.map((r, i) => (
+              <div key={r.id || i} style={{border:`1px solid ${COR.borda}`, borderRadius:12, padding:'12px 14px'}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:10}}>
+                  <span style={{fontSize:14.5, fontWeight:800, color:COR.texto}}>{(r.dataRef||'').split('-').reverse().join('/')}</span>
+                  {r.horimetro != null && <span style={{fontSize:13.5, fontWeight:700, color:COR.azul}}>{Math.round(r.horimetro)} {suf}</span>}
+                </div>
+                {r.observacao && <p style={{margin:'6px 0 0', fontSize:13, color:COR.cinza, lineHeight:1.45}}>{r.observacao}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ============================================================
 // CARD DE MÁQUINA (item da lista)
 // ============================================================
-function CardMaquina({ m, onEditar, onToggleAtiva }) {
+function CardMaquina({ m, onEditar, onToggleAtiva, onRegistrarRevisao, onVerHistorico }) {
+  const man = (m.tipo === 'axial' && m.possuiHorimetro) ? calcularManutencao(m) : null;
   return (
     <div style={{...S.card, padding:0, overflow:'hidden', opacity: m.ativa ? 1 : 0.62}}>
       <div style={{display:'flex', alignItems:'stretch'}}>
@@ -1817,12 +1966,21 @@ function CardMaquina({ m, onEditar, onToggleAtiva }) {
             {m.tipo === 'axial' && <BadgeManutencao maquina={m} />}
           </div>
 
-          <div style={{display:'flex', gap:8, marginTop:14}}>
+          {/* Barra de progresso da manutenção */}
+          {man && man.percent != null && <BarraManutencao man={man} suf={unidadeSufixo(m)} />}
+
+          <div style={{display:'flex', gap:8, marginTop:14, flexWrap:'wrap'}}>
             <button onClick={() => onEditar(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1}}><Edit size={15}/> Editar</button>
             <button onClick={() => onToggleAtiva(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, color: m.ativa ? COR.vermelho : COR.verde, borderColor: m.ativa ? '#FECACA' : '#A7F3D0'}}>
               {m.ativa ? <><CircleSlash size={15}/> Inativar</> : <><Power size={15}/> Reativar</>}
             </button>
           </div>
+          {m.tipo === 'axial' && m.possuiHorimetro && (onRegistrarRevisao || onVerHistorico) && (
+            <div style={{display:'flex', gap:8, marginTop:8, flexWrap:'wrap'}}>
+              {onRegistrarRevisao && <button onClick={() => onRegistrarRevisao(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1, color:COR.azul, borderColor:'#BFD4EC'}}><Wrench size={15}/> Registrar revisão</button>}
+              {onVerHistorico && <button onClick={() => onVerHistorico(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1}}><Clock size={15}/> Histórico</button>}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1883,12 +2041,14 @@ function GestaoObras({ obras, onCriar, onRenomear, onExcluir, onFechar }) {
 // ============================================================
 // TELA: GESTÃO DE MÁQUINAS (lista + busca + filtros)
 // ============================================================
-function TelaMaquinas({ maquinas, obras, onNova, onEditar, onToggleAtiva, onAbrirObras, carregando }) {
+function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAtiva, onAbrirObras, onRegistrarRevisao, carregando }) {
   const [busca, setBusca] = useState('');
   const [fTipo, setFTipo] = useState('todos');
   const [fObra, setFObra] = useState('todas');
   const [fMaquina, setFMaquina] = useState('todas');
   const [mostrarInativas, setMostrarInativas] = useState(false);
+  const [revisarMaq, setRevisarMaq] = useState(null);   // máquina p/ registrar revisão
+  const [historicoMaq, setHistoricoMaq] = useState(null); // máquina p/ ver histórico
 
   // máquinas disponíveis no seletor (respeitam tipo/obra e ativas/inativas)
   const maquinasDoSeletor = maquinas
@@ -1966,8 +2126,19 @@ function TelaMaquinas({ maquinas, obras, onNova, onEditar, onToggleAtiva, onAbri
         </div>
       ) : (
         <div style={{display:'flex', flexDirection:'column', gap:12}}>
-          {filtradas.map(m => <CardMaquina key={m.id} m={m} onEditar={onEditar} onToggleAtiva={onToggleAtiva} />)}
+          {filtradas.map(m => <CardMaquina key={m.id} m={m} onEditar={onEditar} onToggleAtiva={onToggleAtiva} onRegistrarRevisao={setRevisarMaq} onVerHistorico={setHistoricoMaq} />)}
         </div>
+      )}
+
+      {revisarMaq && (
+        <RegistrarRevisao
+          maquina={revisarMaq}
+          onFechar={() => setRevisarMaq(null)}
+          onSalvar={async (dados) => { await onRegistrarRevisao(revisarMaq, dados); setRevisarMaq(null); }}
+        />
+      )}
+      {historicoMaq && (
+        <HistoricoRevisoes maquina={historicoMaq} revisoes={revisoes} onFechar={() => setHistoricoMaq(null)} />
       )}
     </div>
   );
@@ -3730,6 +3901,7 @@ function App() {
   const [valObra, setValObra] = useState(null);
   const [valTela, setValTela] = useState('validar'); // 'validar' | 'relatorios'
   const [maquinas, setMaquinas] = useState([]);
+  const [revisoes, setRevisoes] = useState([]);
   const [obras, setObras] = useState([]);
   const [registros, setRegistros] = useState([]);
   const [checklistItens, setChecklistItens] = useState(CHECKLIST_PADRAO);
@@ -3789,8 +3961,8 @@ function App() {
   }, []);
 
   async function recarregar() {
-    const [ms, os, rs, ci] = await Promise.all([listarMaquinas(), listarObras(), listarRegistros(), lerChecklistConfig()]);
-    setMaquinas(ms); setObras(os); setRegistros(rs); setChecklistItens(ci); setCarregando(false);
+    const [ms, os, rs, ci, rv] = await Promise.all([listarMaquinas(), listarObras(), listarRegistros(), lerChecklistConfig(), listarRevisoes()]);
+    setMaquinas(ms); setObras(os); setRegistros(rs); setChecklistItens(ci); setRevisoes(rv); setCarregando(false);
   }
 
   // Carrega dados quando entra em operador ou admin
@@ -3844,6 +4016,12 @@ function App() {
     if (!supabaseClient) return;
     await supabaseClient.from('maquinas').update({ ativa: !m.ativa }).eq('id', m.id);
     aviso(m.ativa ? 'Máquina inativada.' : 'Máquina reativada.');
+    recarregar();
+  }
+
+  async function registrarRevisao(maquina, dados) {
+    await inserirRevisao(maquina, dados);
+    aviso('Revisão registrada.');
     recarregar();
   }
 
@@ -4260,11 +4438,12 @@ function App() {
       <main style={{padding:'24px 16px 60px'}}>
         {tela === 'lista' && (
           <TelaMaquinas
-            maquinas={maquinas} obras={obras} carregando={carregando}
+            maquinas={maquinas} obras={obras} revisoes={revisoes} carregando={carregando}
             onNova={() => { setEditando(null); setTela('form'); }}
             onEditar={(m) => { setEditando(m); setTela('form'); }}
             onToggleAtiva={toggleAtiva}
             onAbrirObras={() => setShowObras(true)}
+            onRegistrarRevisao={registrarRevisao}
           />
         )}
         {tela === 'form' && (
