@@ -578,7 +578,7 @@ async function semearSeVazio() {
 // Calcula o estado da manutenção (semáforo) p/ máquinas axial
 // Retorna { cor, rotulo, restante, vencido }
 function calcularManutencao(m) {
-  if (m.tipo !== 'axial' || !m.possuiHorimetro) {
+  if (!m.possuiHorimetro) {
     return { cor: COR.cinza, rotulo: 'N/A', restante: null, vencido: false, percent: null, desdeUltima: null, intervalo: null };
   }
   const desdeUltima = Math.max(0, m.horimetroAtual - (m.horimetroUltimaManutencao || 0));
@@ -1943,7 +1943,7 @@ function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
           </div>
         )}
 
-        {f.tipo === 'axial' && (
+        {f.possuiHorimetro && (
           <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
             {inputNum('intervaloManutencao', 'Intervalo de manutenção', unidadeSufixo(f))}
             {inputNum('horimetroUltimaManutencao', (f.unidade==='km'?'Hodômetro':'Horímetro')+' na última revisão', unidadeSufixo(f))}
@@ -2077,7 +2077,7 @@ function HistoricoRevisoes({ maquina, revisoes, onFechar }) {
 // CARD DE MÁQUINA (item da lista)
 // ============================================================
 function CardMaquina({ m, onEditar, onToggleAtiva, onRegistrarRevisao, onVerHistorico }) {
-  const man = (m.tipo === 'axial' && m.possuiHorimetro) ? calcularManutencao(m) : null;
+  const man = m.possuiHorimetro ? calcularManutencao(m) : null;
   return (
     <div style={{...S.card, padding:0, overflow:'hidden', opacity: m.ativa ? 1 : 0.62}}>
       <div style={{display:'flex', alignItems:'stretch'}}>
@@ -2106,7 +2106,7 @@ function CardMaquina({ m, onEditar, onToggleAtiva, onRegistrarRevisao, onVerHist
             {m.possuiHorimetro
               ? <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.texto, fontWeight:700}}><Gauge size={14}/> {Math.round(m.horimetroAtual)} {unidadeSufixo(m)}</span>
               : <span style={{display:'inline-flex', alignItems:'center', gap:5, color:COR.cinza}}><Gauge size={14}/> sem {m.unidade==='km'?'hodômetro':'horímetro'}</span>}
-            {m.tipo === 'axial' && <BadgeManutencao maquina={m} />}
+            {m.possuiHorimetro && <BadgeManutencao maquina={m} />}
           </div>
 
           {/* Barra de progresso da manutenção */}
@@ -2118,7 +2118,7 @@ function CardMaquina({ m, onEditar, onToggleAtiva, onRegistrarRevisao, onVerHist
               {m.ativa ? <><CircleSlash size={15}/> Inativar</> : <><Power size={15}/> Reativar</>}
             </button>
           </div>
-          {m.tipo === 'axial' && m.possuiHorimetro && (onRegistrarRevisao || onVerHistorico) && (
+          {m.possuiHorimetro && (onRegistrarRevisao || onVerHistorico) && (
             <div style={{display:'flex', gap:8, marginTop:8, flexWrap:'wrap'}}>
               {onRegistrarRevisao && <button onClick={() => onRegistrarRevisao(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1, color:COR.azul, borderColor:'#BFD4EC'}}><Wrench size={15}/> Registrar revisão</button>}
               {onVerHistorico && <button onClick={() => onVerHistorico(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1}}><Clock size={15}/> Histórico</button>}
