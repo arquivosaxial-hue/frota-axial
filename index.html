@@ -2654,6 +2654,21 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
       }
     } else if (status === 'nao_funcional') {
       if (!motivo) { setErro('Selecione o motivo da parada.'); return; }
+    } else if (status === 'sem_atividade') {
+      if (temHorimetro && (horimetro === '' || isNaN(Number(horimetro)))) {
+        setErro(`Informe o ${maquina.unidade==='km'?'hodômetro':'horímetro'} atual. É obrigatório mesmo sem atividade.`);
+        return;
+      }
+      // validação inteligente também aqui
+      if (temHorimetro && !forcar) {
+        const novo = Number(horimetro);
+        const ultima = (maquina.horimetroAtual != null) ? Number(maquina.horimetroAtual) : null;
+        const suf = unidadeSufixo(maquina);
+        if (ultima != null && ultima > 0) {
+          if (novo < ultima) { setAvisoLeitura(`A leitura informada (${novo}${suf}) é MENOR que a última registrada (${Math.round(ultima)}${suf}). O medidor não costuma diminuir. Confira se digitou certo.`); return; }
+          if (novo - ultima > 1000) { setAvisoLeitura(`A diferença para a última leitura é de ${Math.round(novo - ultima)}${suf} (acima de 1000${suf}). Isso é incomum. Confira se digitou certo.`); return; }
+        }
+      }
     }
     setAvisoLeitura('');
 
@@ -2675,7 +2690,7 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
     onConfirmar({
       operador: operador.trim(),
       status,
-      horimetro: (status === 'funcional' && temHorimetro) ? Number(horimetro) : null,
+      horimetro: ((status === 'funcional' || status === 'sem_atividade') && temHorimetro) ? Number(horimetro) : null,
       horimetroNA: false,
       motivo: status === 'nao_funcional' ? motivo : '',
       observacao: obs.trim(),
@@ -2759,9 +2774,22 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
         </div>
 
         {status === 'sem_atividade' && (
-          <div style={{background:'#F1F5F9', border:'1px solid #E2E8F0', borderRadius:12, padding:'12px 14px', fontSize:13.5, color:'#475569'}}>
-            Você está registrando que <b>não houve atividade</b> neste dia. Não é necessário preencher horímetro, foto ou checklist. Basta confirmar com seu nome.
-          </div>
+          <>
+            <div style={{background:'#F1F5F9', border:'1px solid #E2E8F0', borderRadius:12, padding:'12px 14px', fontSize:13.5, color:'#475569'}}>
+              Você está registrando que <b>não houve atividade</b> neste dia. Não é necessário foto nem checklist.
+            </div>
+            {temHorimetro && (
+              <div>
+                <label style={S.rotulo}>{unidadeMedidor(maquina)} atual</label>
+                <div style={{position:'relative'}}>
+                  <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+                  <input type="number" inputMode="numeric" value={horimetro} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); }}/>
+                  <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{unidadeSufixo(maquina)}</span>
+                </div>
+                <p style={{fontSize:12, color:COR.cinza, margin:'7px 2px 0'}}>Obrigatório: confirme a leitura atual do medidor, mesmo sem ter rodado.</p>
+              </div>
+            )}
+          </>
         )}
 
         {/* Bloco Funcional */}
