@@ -2351,14 +2351,15 @@ function LoginAdmin({ onEntrar, onVoltar }) {
 function TelaInicial({ onOperador, onValidador, onAdmin, meusRegistros, onBaixarPdf }) {
   return (
     <div style={{minHeight:'100vh', background:`linear-gradient(160deg, ${COR.azul} 0%, #14293f 100%)`, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24}}>
-      <div style={{width:72, height:72, borderRadius:20, background:'rgba(255,255,255,.12)', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:18}}>
-        <Factory size={38} color="#fff" />
+      <div style={{background:'#fff', borderRadius:18, padding:'18px 26px', marginBottom:22, boxShadow:'0 8px 28px rgba(0,0,0,.28)'}}>
+        <img src={LOGO_AXIAL} alt="Construtora Axial" style={{display:'block', width:'min(74vw, 260px)', height:'auto'}}/>
       </div>
-      <h1 style={{color:'#fff', fontSize:28, fontWeight:800, margin:'0 0 4px', textAlign:'center'}}>Gestão de Frota</h1>
-      <p style={{color:'rgba(255,255,255,.65)', fontSize:15, margin:'0 0 36px'}}>Construtora Axial</p>
+      <h1 style={{color:'#fff', fontSize:26, fontWeight:800, margin:'0 0 4px', textAlign:'center', letterSpacing:.3}}>Gestão de Frota</h1>
+      <p style={{color:'rgba(255,255,255,.6)', fontSize:14.5, margin:'0 0 34px'}}>Controle de máquinas e veículos</p>
 
       <div style={{display:'flex', flexDirection:'column', gap:14, width:'100%', maxWidth:360}}>
-        <button onClick={onOperador} style={{display:'flex', alignItems:'center', gap:14, background:'#fff', border:'none', borderRadius:16, padding:'20px 22px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', boxShadow:'0 4px 16px rgba(0,0,0,.15)'}}>
+        <button onClick={onOperador} style={{display:'flex', alignItems:'center', gap:14, background:'#fff', border:'none', borderRadius:16, padding:'20px 22px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', boxShadow:'0 6px 20px rgba(0,0,0,.20)', position:'relative'}}>
+          <div style={{position:'absolute', left:0, top:14, bottom:14, width:4, borderRadius:999, background:COR.azulCl}}/>
           <div style={{width:46, height:46, borderRadius:12, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><User size={24} color={COR.azul}/></div>
           <div style={{flex:1}}>
             <div style={{fontSize:17, fontWeight:800, color:COR.texto}}>Sou Operador</div>
@@ -2413,6 +2414,8 @@ function TelaInicial({ onOperador, onValidador, onAdmin, meusRegistros, onBaixar
           </div>
         </div>
       )}
+
+      <p style={{color:'rgba(255,255,255,.4)', fontSize:12, marginTop:32, textAlign:'center'}}>Construtora Axial · Gestão de Frota</p>
     </div>
   );
 }
@@ -3081,12 +3084,12 @@ function CalendarioMaquina({ maquina, registros, ini, fim, onEditarDia }) {
   );
 }
 
-function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste }) {
+function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, obraFixa }) {
   const hoje = new Date().toISOString().slice(0,10);
   const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
   const [ini, setIni] = useState(mesPassado);
   const [fim, setFim] = useState(hoje);
-  const [fObra, setFObra] = useState('todas');
+  const [fObra, setFObra] = useState(obraFixa || 'todas');
   const [fMaquina, setFMaquina] = useState('todas');
   const [fEmpresa, setFEmpresa] = useState('todas');
   const [editandoDia, setEditandoDia] = useState(null);
@@ -3140,10 +3143,16 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste }) {
         </div>
         <div>
           <label style={S.rotulo}>Obra</label>
-          <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFObra(e.target.value); setFMaquina('todas'); }}>
-            <option value="todas">Todas as obras</option>
-            {obras.map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
+          {obraFixa ? (
+            <div style={{...S.campo, width:'auto', padding:'9px 14px', background:'#EFF6FF', border:`1.5px solid #BFD4EC`, fontWeight:700, color:COR.azul, display:'flex', alignItems:'center', gap:7}}>
+              <Building size={15}/> {obraFixa}
+            </div>
+          ) : (
+            <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFObra(e.target.value); setFMaquina('todas'); }}>
+              <option value="todas">Todas as obras</option>
+              {obras.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          )}
         </div>
         <div>
           <label style={S.rotulo}>Empresa</label>
@@ -3854,7 +3863,7 @@ function LoginValidador({ onEntrar, onVoltar }) {
 }
 
 // Validador: escolher a obra
-function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onVoltar }) {
+function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onAbrirRelatorio, onVoltar }) {
   // conta registros pendentes de validação por obra
   const pendentesPorObra = {};
   for (const r of registros) {
@@ -3898,22 +3907,29 @@ function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onVoltar }) {
           const atraso = atrasoPorObra[nome] || 0;
           const temAlgo = pend > 0 || semCheck > 0 || atraso > 0;
           return (
-            <button key={nome} onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${temAlgo ? '#FDE68A' : COR.borda}`, borderRadius:14, padding:'15px 16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
-              <div style={{width:42, height:42, borderRadius:11, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><Building size={22} color={COR.azul}/></div>
-              <div style={{flex:1, minWidth:0}}>
-                <div style={{fontSize:15.5, fontWeight:700, color:COR.texto, marginBottom: temAlgo ? 6 : 0}}>{nome}</div>
-                {temAlgo ? (
-                  <div style={{display:'flex', flexWrap:'wrap', gap:6}}>
-                    {pend > 0 && <Pilula n={pend} texto="p/ validar" fg="#92400E" bg="#FDE68A"/>}
-                    {semCheck > 0 && <Pilula n={semCheck} texto="sem checklist hoje" fg="#991B1B" bg={COR.vermelhoBg}/>}
-                    {atraso > 0 && <Pilula n={atraso} texto="c/ atraso" fg="#9A3412" bg="#FFEDD5"/>}
-                  </div>
-                ) : (
-                  <div style={{fontSize:12.5, color:COR.verde, fontWeight:600, display:'flex', alignItems:'center', gap:4}}><CheckCircle2 size={13}/> Tudo em dia</div>
-                )}
+            <div key={nome} style={{background:'#fff', border:`1.5px solid ${temAlgo ? '#FDE68A' : COR.borda}`, borderRadius:14, overflow:'hidden'}}>
+              <button onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'transparent', border:'none', padding:'15px 16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+                <div style={{width:42, height:42, borderRadius:11, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}><Building size={22} color={COR.azul}/></div>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontSize:15.5, fontWeight:700, color:COR.texto, marginBottom: temAlgo ? 6 : 0}}>{nome}</div>
+                  {temAlgo ? (
+                    <div style={{display:'flex', flexWrap:'wrap', gap:6}}>
+                      {pend > 0 && <Pilula n={pend} texto="p/ validar" fg="#92400E" bg="#FDE68A"/>}
+                      {semCheck > 0 && <Pilula n={semCheck} texto="sem checklist hoje" fg="#991B1B" bg={COR.vermelhoBg}/>}
+                      {atraso > 0 && <Pilula n={atraso} texto="c/ atraso" fg="#9A3412" bg="#FFEDD5"/>}
+                    </div>
+                  ) : (
+                    <div style={{fontSize:12.5, color:COR.verde, fontWeight:600, display:'flex', alignItems:'center', gap:4}}><CheckCircle2 size={13}/> Tudo em dia</div>
+                  )}
+                </div>
+                <ChevronRight size={20} color={COR.cinza} style={{flexShrink:0}}/>
+              </button>
+              <div style={{borderTop:`1px solid ${COR.borda}`, padding:'8px 12px', display:'flex', justifyContent:'flex-end', background:'#FAFBFC'}}>
+                <button onClick={() => onAbrirRelatorio(nome)} style={{display:'inline-flex', alignItems:'center', gap:6, background:'#EFF6FF', color:COR.azul, border:'1px solid #BFD4EC', borderRadius:9, padding:'7px 14px', fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>
+                  <BarChart3 size={15}/> Relatório desta obra
+                </button>
               </div>
-              <ChevronRight size={20} color={COR.cinza} style={{flexShrink:0}}/>
-            </button>
+            </div>
           );
         })}
         {obras.length === 0 && <p style={{textAlign:'center', color:COR.cinza, padding:'30px 0'}}>Nenhuma obra com máquinas ativas.</p>}
@@ -4114,6 +4130,7 @@ function App() {
   const [logadoValidador, setLogadoValidador] = useState(false);
   const [valObra, setValObra] = useState(null);
   const [valTela, setValTela] = useState('validar'); // 'validar' | 'relatorios'
+  const [valObraRelatorio, setValObraRelatorio] = useState(null); // obra travada p/ relatório
   const [maquinas, setMaquinas] = useState([]);
   const [revisoes, setRevisoes] = useState([]);
   const [obras, setObras] = useState([]);
@@ -4506,19 +4523,16 @@ function App() {
             </div>
           </div>
           <div style={{display:'flex', gap:8}}>
-            <button onClick={() => setValTela(valTela === 'relatorios' ? 'validar' : 'relatorios')} style={{background:'rgba(255,255,255,.2)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}>
-              {valTela === 'relatorios' ? <><CheckCircle2 size={16}/> Validação</> : <><BarChart3 size={16}/> Relatórios</>}
-            </button>
             <button onClick={sairValidador} style={{background:'rgba(255,255,255,.2)', color:'#fff', border:'none', borderRadius:8, padding:'8px 12px', fontSize:13.5, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:6, fontFamily:'inherit'}}><LogOut size={16}/> Sair</button>
           </div>
         </header>
         <main style={{padding:'24px 16px 60px'}}>
           {carregando ? (
             <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando…</p>
-          ) : valTela === 'relatorios' ? (
-            <TelaRelatorios registros={registros} maquinas={maquinas} onVoltar={() => setValTela('validar')} onSalvarAjuste={salvarAjusteRegistro} />
+          ) : valObraRelatorio ? (
+            <TelaRelatorios registros={registros} maquinas={maquinas} obraFixa={valObraRelatorio} onVoltar={() => setValObraRelatorio(null)} onSalvarAjuste={salvarAjusteRegistro} />
           ) : !valObra ? (
-            <ValidadorSelecionaObra maquinas={maquinas} registros={registros} onEscolher={setValObra} onVoltar={sairValidador} />
+            <ValidadorSelecionaObra maquinas={maquinas} registros={registros} onEscolher={setValObra} onAbrirRelatorio={setValObraRelatorio} onVoltar={sairValidador} />
           ) : (
             <ValidadorRegistros obra={valObra} registros={registros} maquinas={maquinas} onValidar={validarRegistro} onVoltar={() => setValObra(null)} />
           )}
