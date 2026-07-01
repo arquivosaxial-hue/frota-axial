@@ -471,7 +471,7 @@ function cacheLer(chave, padrao) {
 
 // Registros feitos NESTE aparelho hoje (para a tela inicial do operador)
 function meusRegistrosHoje() {
-  const hoje = new Date().toISOString().slice(0,10);
+  const hoje = diaLocal(new Date());
   const todos = cacheLer('meus_registros', []);
   // mantém só os de hoje (limpa os antigos)
   const doDia = todos.filter(r => (r.dia === hoje));
@@ -479,7 +479,7 @@ function meusRegistrosHoje() {
   return doDia;
 }
 function adicionarMeuRegistro(item) {
-  const hoje = new Date().toISOString().slice(0,10);
+  const hoje = diaLocal(new Date());
   const atuais = meusRegistrosHoje();
   atuais.unshift({ ...item, dia: hoje });
   try { localStorage.setItem('cache_meus_registros', JSON.stringify(atuais.slice(0, 50))); } catch(e){}
@@ -641,6 +641,18 @@ function BarraManutencao({ man, suf, compacta }) {
 }
 
 // Rótulos conforme a unidade da máquina (horas/km)
+// Converte um timestamp/ISO para 'YYYY-MM-DD' no fuso LOCAL do dispositivo.
+// (Evita o bug de usar toISOString(), que converte para UTC e pode "pular" para o dia seguinte.)
+function diaLocal(dataISO) {
+  if (!dataISO) return null;
+  const d = new Date(dataISO);
+  if (isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dia = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dia}`;
+}
+
 function unidadeSufixo(m) { return (m && m.unidade === 'km') ? 'km' : 'h'; }
 function unidadeMedidor(m) { return (m && m.unidade === 'km') ? 'Hodômetro' : 'Horímetro'; }
 function unidadeTrabalho(m) { return (m && m.unidade === 'km') ? 'Km rodados' : 'Horas trabalhadas'; }
@@ -695,15 +707,15 @@ function diasPendentesMaquina(maquina, registros) {
   const diasComRegistro = new Set(
     registros
       .filter(r => r.maquinaId === maquina.id)
-      .map(r => (r.dataRef || new Date(r.criadoEm).toISOString().slice(0,10)))
+      .map(r => (r.dataRef || diaLocal(r.criadoEm)))
   );
   const pendentes = [];
   // limite inferior: o maior entre o corte global e a data de início do contrato da máquina
   const corteContrato = (maquina.dataInicioContrato && maquina.dataInicioContrato > DATA_INICIO_RETROATIVO)
     ? maquina.dataInicioContrato : DATA_INICIO_RETROATIVO;
   for (let i = 1; i <= DIAS_RETROATIVO; i++) {     // i=1 => ontem; nunca inclui hoje
-    const d = new Date(hoje); d.setDate(d.getDate() - i);
-    const iso = d.toISOString().slice(0,10);
+    const d = new Date(hoje + 'T00:00:00'); d.setDate(d.getDate() - i);
+    const iso = diaLocal(d);
     if (iso < corteContrato) continue;             // nada antes do início do contrato (ou 01/06)
     if (!diasComRegistro.has(iso)) pendentes.push(iso);
   }
@@ -1099,7 +1111,7 @@ function tabelaMotivosPdf(doc, regsMaquina, y, W, addPageCb) {
   doc.setFont('helvetica', 'normal'); doc.setTextColor(40);
   for (const p of paradas) {
     if (y > H - 14) { addPageCb && addPageCb(); y = 34; }
-    const dia = (p.dataRef || new Date(p.criadoEm).toISOString().slice(0,10)).split('-').reverse().slice(0,2).join('/');
+    const dia = (p.dataRef || diaLocal(p.criadoEm)).split('-').reverse().slice(0,2).join('/');
     const operador = (p.operador && p.operador.trim()) ? p.operador.trim() : '—';
     const motivo = p.motivoParada || '—';
     const causa = (p.observacao && p.observacao.trim()) ? p.observacao.trim() : '—';
@@ -1144,7 +1156,7 @@ function tabelaTrabalhoPorDiaPdf(doc, R, maquina, y, W, addPageCb) {
   // mapa dia -> operador (primeiro registro do dia)
   const opPorDia = {};
   ((R && R.registros) || []).forEach(r => {
-    const dia = r.dataRef || (r.criadoEm ? new Date(r.criadoEm).toISOString().slice(0,10) : null);
+    const dia = r.dataRef || (r.criadoEm ? diaLocal(r.criadoEm) : null);
     if (!dia) return;
     if (!opPorDia[dia] && r.operador) opPorDia[dia] = r.operador;
   });
@@ -1321,7 +1333,7 @@ function calcularResumoPeriodo(registros, maquinas, ini, fim) {
     const bucket = porMaquina[r.maquinaId];
     if (!bucket) continue;
     bucket.registros.push(r);
-    const dia = r.dataRef || new Date(r.criadoEm).toISOString().slice(0,10);
+    const dia = r.dataRef || diaLocal(r.criadoEm);
     (porMaqDia[r.maquinaId] = porMaqDia[r.maquinaId] || {});
     (porMaqDia[r.maquinaId][dia] = porMaqDia[r.maquinaId][dia] || []).push(r);
   }
@@ -1393,12 +1405,12 @@ function diasSemRegistro(registros, maquinas, ini, fim) {
   const d0 = new Date(ini + 'T00:00:00');
   const d1 = new Date(fim + 'T00:00:00');
   for (let d = new Date(d0); d <= d1; d.setDate(d.getDate() + 1)) {
-    dias.push(d.toISOString().slice(0,10));
+    dias.push(diaLocal(d));
   }
   // dias com registro por máquina
   const comRegistro = {};
   for (const r of registros) {
-    const dia = new Date(r.criadoEm).toISOString().slice(0,10);
+    const dia = diaLocal(r.criadoEm);
     if (dia < ini || dia > fim) continue;
     (comRegistro[r.maquinaId] = comRegistro[r.maquinaId] || new Set()).add(dia);
   }
@@ -1455,7 +1467,7 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
     const porDia = {};
     for (const r of registros) {
       if (r.maquinaId !== maquina.id) continue;
-      const dia = r.dataRef || new Date(r.criadoEm).toISOString().slice(0,10);
+      const dia = r.dataRef || diaLocal(r.criadoEm);
       (porDia[dia] = porDia[dia] || []).push(r);
     }
     const stPorDia = {}; for (const dia in porDia) stPorDia[dia] = statusDoDia(porDia[dia]);
@@ -2038,7 +2050,7 @@ function FormMaquina({ maquina, obras, onSalvar, onCancelar }) {
 
 // Modal: registrar uma revisão de manutenção
 function RegistrarRevisao({ maquina, onSalvar, onFechar }) {
-  const hoje = new Date().toISOString().slice(0,10);
+  const hoje = diaLocal(new Date());
   const [data, setData] = useState(hoje);
   const [horimetro, setHorimetro] = useState(maquina.horimetroAtual != null ? String(Math.round(maquina.horimetroAtual)) : '');
   const [obs, setObs] = useState('');
@@ -2553,8 +2565,8 @@ function OperadorSelecionaObra({ obras, maquinas, registros, onEscolher, onVolta
   const contagem = {};
   // conta pendências por obra: checklist de hoje faltando + dias atrasados
   const pendPorObra = {};
-  const hoje = new Date().toISOString().slice(0,10);
-  const comCheckHoje = new Set((registros || []).filter(r => new Date(r.criadoEm).toISOString().slice(0,10) === hoje).map(r => r.maquinaId));
+  const hoje = diaLocal(new Date());
+  const comCheckHoje = new Set((registros || []).filter(r => diaLocal(r.criadoEm) === hoje).map(r => r.maquinaId));
   for (const m of ativas) {
     const nome = m.obra || 'Sem obra';
     contagem[nome] = (contagem[nome] || 0) + 1;
@@ -3143,7 +3155,7 @@ function CalendarioMaquina({ maquina, registros, ini, fim, onEditarDia }) {
   const porDia = {};
   for (const r of registros) {
     if (r.maquinaId !== maquina.id) continue;
-    const dia = r.dataRef || new Date(r.criadoEm).toISOString().slice(0,10);
+    const dia = r.dataRef || diaLocal(r.criadoEm);
     (porDia[dia] = porDia[dia] || []).push(r);
   }
   // status por dia (regra das 14h)
@@ -3226,8 +3238,8 @@ function CalendarioMaquina({ maquina, registros, ini, fim, onEditarDia }) {
 }
 
 function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, obraFixa }) {
-  const hoje = new Date().toISOString().slice(0,10);
-  const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+  const hoje = diaLocal(new Date());
+  const mesPassado = diaLocal(new Date(Date.now() - 30*86400000));
   const [ini, setIni] = useState(mesPassado);
   const [fim, setFim] = useState(hoje);
   const [fObra, setFObra] = useState(obraFixa || 'todas');
@@ -3275,15 +3287,15 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, obraFix
       <div style={{...S.cardFiltro, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
         <CabecalhoFiltros />
         <div>
-          <label style={S.rotulo}>De</label>
+          <label style={S.rotuloForte}>De</label>
           <input type="date" value={ini} style={{...S.campo, width:'auto'}} onChange={e => setIni(e.target.value)}/>
         </div>
         <div>
-          <label style={S.rotulo}>Até</label>
+          <label style={S.rotuloForte}>Até</label>
           <input type="date" value={fim} style={{...S.campo, width:'auto'}} onChange={e => setFim(e.target.value)}/>
         </div>
         <div>
-          <label style={S.rotulo}>Obra</label>
+          <label style={S.rotuloForte}>Obra</label>
           {obraFixa ? (
             <div style={{...S.campo, width:'auto', padding:'9px 14px', background:'#EFF6FF', border:`1.5px solid #BFD4EC`, fontWeight:700, color:COR.azul, display:'flex', alignItems:'center', gap:7}}>
               <Building size={15}/> {obraFixa}
@@ -3296,14 +3308,14 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, obraFix
           )}
         </div>
         <div>
-          <label style={S.rotulo}>Empresa</label>
+          <label style={S.rotuloForte}>Empresa</label>
           <select value={fEmpresa} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFEmpresa(e.target.value); setFMaquina('todas'); }}>
             <option value="todas">Todas as empresas</option>
             {empresas.map(emp => <option key={emp} value={emp}>{emp}</option>)}
           </select>
         </div>
         <div>
-          <label style={S.rotulo}>Máquina</label>
+          <label style={S.rotuloForte}>Máquina</label>
           <select value={fMaquina} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFMaquina(e.target.value)}>
             <option value="todas">Todas as máquinas</option>
             {maquinasDoFiltro.map(m => <option key={m.id} value={m.id}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</option>)}
@@ -3719,8 +3731,8 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
 // ADMIN: TELA DE REGISTROS (checklists recebidos)
 // ============================================================
 function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalvarAjuste }) {
-  const hoje = new Date().toISOString().slice(0,10);
-  const mesPassado = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+  const hoje = diaLocal(new Date());
+  const mesPassado = diaLocal(new Date(Date.now() - 30*86400000));
   const [ini, setIni] = useState(mesPassado);
   const [fim, setFim] = useState(hoje);
   const [expandido, setExpandido] = useState(null);
@@ -3777,15 +3789,15 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
       <div style={{...S.cardFiltro, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
         <CabecalhoFiltros />
         <div>
-          <label style={S.rotulo}>De</label>
+          <label style={S.rotuloForte}>De</label>
           <input type="date" value={ini} style={{...S.campo, width:'auto'}} onChange={e => setIni(e.target.value)}/>
         </div>
         <div>
-          <label style={S.rotulo}>Até</label>
+          <label style={S.rotuloForte}>Até</label>
           <input type="date" value={fim} style={{...S.campo, width:'auto'}} onChange={e => setFim(e.target.value)}/>
         </div>
         <div>
-          <label style={S.rotulo}>Obra</label>
+          <label style={S.rotuloForte}>Obra</label>
           <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFObra(e.target.value); setFMaquina('todas'); }}>
             <option value="todas">Todas as obras</option>
             {obrasNosRegistros.map(o => <option key={o} value={o}>{o}</option>)}
@@ -3895,7 +3907,7 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
                       <button onClick={() => gerarPdfRegistro(r, mapaMaquinas[r.maquinaId] || { codigo:r.maquinaCodigo, descricao:r.maquinaDescricao, obra:r.obra, possuiHorimetro:true, tipo:'axial' })} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5}}>
                         <Download size={16}/> Baixar PDF deste registro
                       </button>
-                      <button onClick={() => setEditando({ maquina: mapaMaquinas[r.maquinaId] || { id:r.maquinaId, codigo:r.maquinaCodigo, descricao:r.maquinaDescricao, obra:r.obra }, data: (r.dataRef || new Date(r.criadoEm).toISOString().slice(0,10)), registro: r })} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5}}>
+                      <button onClick={() => setEditando({ maquina: mapaMaquinas[r.maquinaId] || { id:r.maquinaId, codigo:r.maquinaCodigo, descricao:r.maquinaDescricao, obra:r.obra }, data: (r.dataRef || diaLocal(r.criadoEm)), registro: r })} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5}}>
                         <Edit size={16}/> Editar status
                       </button>
                     </div>
@@ -4024,8 +4036,8 @@ function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onAbrirRelato
     pendentesPorObra[nome] = (pendentesPorObra[nome] || 0) + 1;
   }
   // máquinas sem checklist hoje e com dias atrasados, por obra
-  const hoje = new Date().toISOString().slice(0,10);
-  const comCheckHoje = new Set(registros.filter(r => new Date(r.criadoEm).toISOString().slice(0,10) === hoje).map(r => r.maquinaId));
+  const hoje = diaLocal(new Date());
+  const comCheckHoje = new Set(registros.filter(r => diaLocal(r.criadoEm) === hoje).map(r => r.maquinaId));
   const semCheckPorObra = {};
   const atrasoPorObra = {};
   for (const m of maquinas.filter(x => x.ativa)) {
@@ -4104,10 +4116,10 @@ function ValidadorRegistros({ obra, registros, maquinas, onValidar, onVoltar }) 
     .sort((a,b) => new Date(b.criadoEm) - new Date(a.criadoEm));
 
   // máquinas da obra que ainda NÃO fizeram checklist HOJE
-  const hoje = new Date().toISOString().slice(0,10);
+  const hoje = diaLocal(new Date());
   const maquinasComCheckHoje = new Set(
     registros
-      .filter(r => new Date(r.criadoEm).toISOString().slice(0,10) === hoje)
+      .filter(r => diaLocal(r.criadoEm) === hoje)
       .map(r => r.maquinaId)
   );
   const semChecklistHoje = maquinas
@@ -4565,7 +4577,7 @@ function App() {
       responsavel: nomeResp, perfil: 'validador',
       acao: status === 'validada' ? 'Validou registro' : 'Invalidou registro',
       maquinaId: reg.maquinaId, maquinaNome: `${reg.maquinaCodigo ? reg.maquinaCodigo+' · ' : ''}${reg.maquinaDescricao}`,
-      dataRef: reg.dataRef || (reg.criadoEm ? new Date(reg.criadoEm).toISOString().slice(0,10) : null),
+      dataRef: reg.dataRef || (reg.criadoEm ? diaLocal(reg.criadoEm) : null),
       valorNovo: status, detalhe: status === 'invalidada' ? motivo : '',
     });
     aviso(status === 'validada' ? 'Registro validado.' : 'Registro invalidado.');
@@ -4764,8 +4776,8 @@ function App() {
               maquinas={maquinas} obra={opObra} ultimoStatus={ultimoStatus} registros={registros}
               onEscolher={(m) => {
                 setOpMaquina(m); setOpDataRef(null); setOpComplemento(false);
-                const hoje = new Date().toISOString().slice(0,10);
-                const fezHoje = registros.some(r => r.maquinaId === m.id && !r.retroativo && new Date(r.criadoEm).toISOString().slice(0,10) === hoje);
+                const hoje = diaLocal(new Date());
+                const fezHoje = registros.some(r => r.maquinaId === m.id && !r.retroativo && diaLocal(r.criadoEm) === hoje);
                 const pend = online ? diasPendentesMaquina(m, registros) : [];
                 // mostra a tela de escolha se há dias atrasados OU se já fez o de hoje (oferece complemento)
                 if (pend.length > 0 || fezHoje) setOpPasso('data');
@@ -4777,7 +4789,7 @@ function App() {
             <OperadorEscolheData
               maquina={opMaquina}
               diasPendentes={diasPendentesMaquina(opMaquina, registros)}
-              jaFezHoje={registros.some(r => r.maquinaId === opMaquina.id && !r.retroativo && new Date(r.criadoEm).toISOString().slice(0,10) === new Date().toISOString().slice(0,10))}
+              jaFezHoje={registros.some(r => r.maquinaId === opMaquina.id && !r.retroativo && diaLocal(r.criadoEm) === diaLocal(new Date()))}
               onEscolher={(iso) => { setOpDataRef(iso); setOpComplemento(false); setOpPasso('registra'); }}
               onComplemento={() => { setOpDataRef(null); setOpComplemento(true); setOpPasso('registra'); }}
               onVoltar={() => { setOpMaquina(null); setOpDataRef(null); setOpComplemento(false); setOpPasso('maquina'); }}
@@ -4793,8 +4805,8 @@ function App() {
               onConfirmar={salvarRegistro}
               onVoltar={() => {
                 const pend = diasPendentesMaquina(opMaquina, registros);
-                const hoje = new Date().toISOString().slice(0,10);
-                const fezHoje = registros.some(r => r.maquinaId === opMaquina.id && !r.retroativo && new Date(r.criadoEm).toISOString().slice(0,10) === hoje);
+                const hoje = diaLocal(new Date());
+                const fezHoje = registros.some(r => r.maquinaId === opMaquina.id && !r.retroativo && diaLocal(r.criadoEm) === hoje);
                 if (pend.length > 0 || fezHoje) setOpPasso('data');
                 else { setOpMaquina(null); setOpPasso('maquina'); }
               }}
