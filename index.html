@@ -2422,13 +2422,21 @@ function TelaInicial({ onOperador, onValidador, onAdmin, meusRegistros, onBaixar
 
 // --- Operador: passo 1, escolher a máquina ---
 // --- Operador: passo 1, escolher a OBRA ---
-function OperadorSelecionaObra({ obras, maquinas, onEscolher, onVoltar }) {
+function OperadorSelecionaObra({ obras, maquinas, registros, onEscolher, onVoltar }) {
   const ativas = maquinas.filter(m => m.ativa);
   // conta máquinas por obra (apenas obras com máquina ativa entram)
   const contagem = {};
+  // conta pendências por obra: checklist de hoje faltando + dias atrasados
+  const pendPorObra = {};
+  const hoje = new Date().toISOString().slice(0,10);
+  const comCheckHoje = new Set((registros || []).filter(r => new Date(r.criadoEm).toISOString().slice(0,10) === hoje).map(r => r.maquinaId));
   for (const m of ativas) {
     const nome = m.obra || 'Sem obra';
     contagem[nome] = (contagem[nome] || 0) + 1;
+    let p = 0;
+    if (!comCheckHoje.has(m.id)) p += 1;                         // checklist de hoje faltando
+    p += diasPendentesMaquina(m, registros || []).length;       // dias atrasados
+    pendPorObra[nome] = (pendPorObra[nome] || 0) + p;
   }
   const nomesObras = Object.keys(contagem).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
@@ -2443,18 +2451,28 @@ function OperadorSelecionaObra({ obras, maquinas, onEscolher, onVoltar }) {
       </div>
 
       <div style={{display:'flex', flexDirection:'column', gap:10}}>
-        {nomesObras.map(nome => (
-          <button key={nome} onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${COR.borda}`, borderRadius:14, padding:'16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
-            <div style={{width:42, height:42, borderRadius:11, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
-              <Building size={22} color={COR.azul}/>
-            </div>
-            <div style={{flex:1, minWidth:0}}>
-              <div style={{fontSize:15.5, fontWeight:700, color:COR.texto}}>{nome}</div>
-              <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>{contagem[nome]} máquina(s)</div>
-            </div>
-            <ChevronRight size={20} color={COR.cinza}/>
-          </button>
-        ))}
+        {nomesObras.map(nome => {
+          const pend = pendPorObra[nome] || 0;
+          return (
+            <button key={nome} onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'#fff', border:`1.5px solid ${pend > 0 ? '#FDE68A' : COR.borda}`, borderRadius:14, padding:'16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
+              <div style={{width:42, height:42, borderRadius:11, background:'#EFF6FF', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+                <Building size={22} color={COR.azul}/>
+              </div>
+              <div style={{flex:1, minWidth:0}}>
+                <div style={{fontSize:15.5, fontWeight:700, color:COR.texto}}>{nome}</div>
+                <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>{contagem[nome]} máquina(s)</div>
+              </div>
+              {pend > 0 ? (
+                <span style={{display:'inline-flex', alignItems:'center', gap:5, fontSize:12.5, fontWeight:800, color:'#92400E', background:'#FDE68A', padding:'5px 11px', borderRadius:999, flexShrink:0}}>
+                  <Clock size={13}/> {pend} pendente(s)
+                </span>
+              ) : (
+                <span style={{display:'inline-flex', alignItems:'center', gap:4, fontSize:12, fontWeight:700, color:COR.verde, flexShrink:0}}><CheckCircle2 size={14}/> em dia</span>
+              )}
+              <ChevronRight size={20} color={COR.cinza} style={{flexShrink:0}}/>
+            </button>
+          );
+        })}
         {nomesObras.length === 0 && <p style={{textAlign:'center', color:COR.cinza, padding:'30px 0'}}>Nenhuma máquina ativa cadastrada.</p>}
       </div>
     </div>
@@ -2768,12 +2786,10 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
             </button>
           </div>
           {/* "Não houve atividade" — só em lançamento retroativo */}
-          {dataRef && (
-            <button onClick={() => setStatus('sem_atividade')} style={{marginTop:10, width:'100%', padding:'13px 12px', borderRadius:12, border:`2px solid ${status==='sem_atividade'?'#64748B':COR.borda}`, background: status==='sem_atividade'?'#F1F5F9':'#fff', cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8}}>
-              <CircleSlash size={20} color={status==='sem_atividade'?'#475569':COR.cinza}/>
-              <span style={{fontSize:15, fontWeight:700, color: status==='sem_atividade'?'#475569':COR.texto}}>Não houve atividade</span>
-            </button>
-          )}
+          <button onClick={() => setStatus('sem_atividade')} style={{marginTop:10, width:'100%', padding:'13px 12px', borderRadius:12, border:`2px solid ${status==='sem_atividade'?'#64748B':COR.borda}`, background: status==='sem_atividade'?'#F1F5F9':'#fff', cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8}}>
+            <CircleSlash size={20} color={status==='sem_atividade'?'#475569':COR.cinza}/>
+            <span style={{fontSize:15, fontWeight:700, color: status==='sem_atividade'?'#475569':COR.texto}}>Não houve atividade</span>
+          </button>
         </div>
 
         {status === 'sem_atividade' && (
@@ -4193,7 +4209,16 @@ function App() {
 
   async function recarregar() {
     const [ms, os, rs, ci, rv] = await Promise.all([listarMaquinas(), listarObras(), listarRegistros(), lerChecklistConfig(), listarRevisoes()]);
-    setMaquinas(ms); setObras(os); setRegistros(rs); setChecklistItens(ci); setRevisoes(rv); setCarregando(false);
+    // Atualiza nome/código/obra de cada registro com o cadastro atual da máquina
+    // (assim, renomear uma máquina reflete em todos os relatórios, inclusive antigos).
+    const mapaM = {};
+    ms.forEach(m => { mapaM[m.id] = m; });
+    const rsAtualizados = rs.map(r => {
+      const m = mapaM[r.maquinaId];
+      if (!m) return r; // máquina excluída: mantém o nome que estava salvo
+      return { ...r, maquinaCodigo: m.codigo || '', maquinaDescricao: m.descricao || r.maquinaDescricao, obra: m.obra || r.obra };
+    });
+    setMaquinas(ms); setObras(os); setRegistros(rsAtualizados); setChecklistItens(ci); setRevisoes(rv); setCarregando(false);
   }
 
   // Carrega dados quando entra em operador ou admin
@@ -4561,7 +4586,7 @@ function App() {
             <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando máquinas…</p>
           ) : opPasso === 'obra' ? (
             <OperadorSelecionaObra
-              obras={obras} maquinas={maquinas}
+              obras={obras} maquinas={maquinas} registros={registros}
               onEscolher={(nome) => { setOpObra(nome); setOpPasso('maquina'); }}
               onVoltar={sairParaInicio}
             />
