@@ -505,6 +505,39 @@ async function listarMaquinas() {
   } catch (e) { console.warn('listarMaquinas offline/falha', e); return cacheLer('maquinas', []); }
 }
 
+// --- Movimentações (auditoria de alterações do admin/validador) ---
+async function registrarMovimentacao(mov) {
+  if (!supabaseClient) return;
+  try {
+    await supabaseClient.from('movimentacoes').insert({
+      responsavel: mov.responsavel || null,
+      perfil: mov.perfil || null,
+      acao: mov.acao || null,
+      maquina_id: mov.maquinaId || null,
+      maquina_nome: mov.maquinaNome || null,
+      data_ref: mov.dataRef || null,
+      valor_antigo: mov.valorAntigo != null ? String(mov.valorAntigo) : null,
+      valor_novo: mov.valorNovo != null ? String(mov.valorNovo) : null,
+      detalhe: mov.detalhe || null,
+    });
+  } catch (e) { console.warn('registrarMovimentacao falha', e); }
+}
+
+async function listarMovimentacoes(limite) {
+  if (!supabaseClient || !navigator.onLine) return [];
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('movimentacoes').select('*').order('criado_em', { ascending: false }).limit(limite || 300), 8000);
+    if (error) throw error;
+    return (data || []).map(r => ({
+      id: r.id, responsavel: r.responsavel || '', perfil: r.perfil || '',
+      acao: r.acao || '', maquinaId: r.maquina_id, maquinaNome: r.maquina_nome || '',
+      dataRef: r.data_ref, valorAntigo: r.valor_antigo, valorNovo: r.valor_novo,
+      detalhe: r.detalhe || '', criadoEm: r.criado_em,
+    }));
+  } catch (e) { console.warn('listarMovimentacoes falha', e); return []; }
+}
+
 // --- Revisões (histórico de manutenção) ---
 async function listarRevisoes() {
   if (!supabaseClient || !navigator.onLine) return cacheLer('revisoes', []);
@@ -1235,6 +1268,11 @@ async function gerarPdfRegistro(reg, maquina) {
 function statusDoDia(regs) {
   if (!regs || regs.length === 0) return null;
   const ord = [...regs].sort((a,b) => new Date(a.criadoEm) - new Date(b.criadoEm));
+  // Ajuste manual do admin prevalece sobre a regra automática.
+  const ajustes = ord.filter(r => r.ajusteAdmin);
+  if (ajustes.length > 0) {
+    return ajustes[ajustes.length - 1].status; // vale o último ajuste do admin
+  }
   const primeiro = ord[0];
   const ultimo = ord[ord.length - 1];
   // se há qualquer registro de atividade (funcional/parado), ele prevalece sobre "sem atividade"
@@ -1441,7 +1479,7 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
     legenda(y); y += 6;
 
     // grade de meses (3 por linha)
-    const colW = 60, mesH = 44;
+    const colW = 60, mesH = 56;
     let col = 0, xBase = 14, yLinha = y;
     for (const mes of meses) {
       if (col === 3) { col = 0; yLinha += mesH; }
@@ -2095,6 +2133,82 @@ function HistoricoRevisoes({ maquina, revisoes, onFechar }) {
   );
 }
 
+// Tela de histórico de movimentações (admin)
+function TelaHistorico({ onVoltar }) {
+  const [lista, setLista] = useState(null);
+  const [filtro, setFiltro] = useState('');
+  useEffect(() => {
+    let vivo = true;
+    listarMovimentacoes(400).then(r => { if (vivo) setLista(r); });
+    return () => { vivo = false; };
+  }, []);
+
+  const filtradas = (lista || []).filter(m => {
+    if (!filtro.trim()) return true;
+    const q = filtro.toLowerCase();
+    return `${m.responsavel} ${m.acao} ${m.maquinaNome} ${m.perfil} ${m.valorAntigo} ${m.valorNovo} ${m.detalhe}`.toLowerCase().includes(q);
+  });
+
+  const rotStatus = (s) => s === 'funcional' ? 'Funcional' : s === 'nao_funcional' ? 'Não funcional' : s === 'sem_atividade' ? 'Não houve atividade' : (s || '—');
+
+  return (
+    <div style={{maxWidth:820, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Histórico de movimentações</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>Alterações feitas por administradores e validadores</p>
+        </div>
+      </div>
+
+      <div style={{...S.cardFiltro, marginBottom:16}}>
+        <CabecalhoFiltros texto="Buscar" />
+        <div style={{position:'relative'}}>
+          <Search size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+          <input value={filtro} placeholder="Buscar por nome, máquina, ação…" style={{...S.campo, paddingLeft:42}} onChange={e => setFiltro(e.target.value)}/>
+        </div>
+      </div>
+
+      {lista === null ? (
+        <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando histórico…</p>
+      ) : filtradas.length === 0 ? (
+        <div style={{textAlign:'center', padding:'40px 16px', color:COR.cinza}}>
+          <Clock size={34} color={COR.borda}/>
+          <p style={{marginTop:10, fontWeight:600}}>Nenhuma movimentação registrada.</p>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:10}}>
+          {filtradas.map((m, i) => (
+            <div key={m.id || i} style={{...S.card, padding:'14px 16px'}}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10, flexWrap:'wrap'}}>
+                <div style={{minWidth:0}}>
+                  <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+                    <span style={{fontSize:15, fontWeight:800, color:COR.texto}}>{m.responsavel || '—'}</span>
+                    <span style={{fontSize:11.5, fontWeight:700, color: m.perfil==='admin' ? '#7C3AED' : COR.verde, background: m.perfil==='admin' ? '#F3E8FF' : COR.verdeBg, padding:'2px 8px', borderRadius:6, textTransform:'uppercase'}}>{m.perfil || '—'}</span>
+                  </div>
+                  <div style={{fontSize:14, color:COR.texto, marginTop:5, fontWeight:600}}>{m.acao}{m.maquinaNome ? ` — ${m.maquinaNome}` : ''}</div>
+                  <div style={{fontSize:13, color:COR.cinza, marginTop:3, display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
+                    {m.dataRef && <span>Dia {m.dataRef.split('-').reverse().join('/')}</span>}
+                    {(m.valorAntigo || m.valorNovo) && (
+                      <span style={{display:'inline-flex', alignItems:'center', gap:5}}>
+                        <span style={{color:COR.vermelho}}>{rotStatus(m.valorAntigo)}</span>
+                        <ChevronRight size={13}/>
+                        <span style={{color:COR.verde, fontWeight:700}}>{rotStatus(m.valorNovo)}</span>
+                      </span>
+                    )}
+                    {m.detalhe && <span style={{fontStyle:'italic'}}>· {m.detalhe}</span>}
+                  </div>
+                </div>
+                <span style={{fontSize:12, color:COR.cinza, whiteSpace:'nowrap'}}>{m.criadoEm ? new Date(m.criadoEm).toLocaleString('pt-BR') : ''}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============================================================
 // CARD DE MÁQUINA (item da lista)
 // ============================================================
@@ -2314,9 +2428,12 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
 // ============================================================
 function LoginAdmin({ onEntrar, onVoltar }) {
   const [senha, setSenha] = useState('');
+  const [nome, setNome] = useState('');
   const [erro, setErro] = useState(false);
+  const [erroNome, setErroNome] = useState(false);
   function entrar() {
-    if (senha === SENHA_ADMIN) onEntrar();
+    if (!nome.trim()) { setErroNome(true); return; }
+    if (senha === SENHA_ADMIN) onEntrar(nome.trim());
     else { setErro(true); setSenha(''); }
   }
   return (
@@ -2328,12 +2445,20 @@ function LoginAdmin({ onEntrar, onVoltar }) {
         <h2 style={{margin:'0 0 6px', fontSize:22, fontWeight:800, color:COR.azul}}>Painel da Frota</h2>
         <p style={{margin:'0 0 20px', color:COR.cinza, fontSize:14}}>Acesso administrativo</p>
         <div style={{position:'relative', marginBottom:12}}>
+          <User size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+          <input value={nome} placeholder="Seu nome" autoFocus
+            style={{...S.campo, paddingLeft:42, borderColor: erroNome ? COR.vermelho : COR.borda}}
+            onChange={e => { setNome(e.target.value); setErroNome(false); }}
+            onKeyDown={e => e.key === 'Enter' && entrar()} />
+        </div>
+        <div style={{position:'relative', marginBottom:12}}>
           <Lock size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
-          <input type="password" value={senha} placeholder="Senha" autoFocus
+          <input type="password" value={senha} placeholder="Senha"
             style={{...S.campo, paddingLeft:42, borderColor: erro ? COR.vermelho : COR.borda}}
             onChange={e => { setSenha(e.target.value); setErro(false); }}
             onKeyDown={e => e.key === 'Enter' && entrar()} />
         </div>
+        {erroNome && <p style={{color:COR.vermelho, fontSize:13, margin:'0 0 12px', fontWeight:600}}>Informe seu nome.</p>}
         {erro && <p style={{color:COR.vermelho, fontSize:13, margin:'0 0 12px', fontWeight:600}}>Senha incorreta.</p>}
         <button onClick={entrar} style={{...S.botaoPrim, width:'100%'}}>Entrar</button>
         {onVoltar && <button onClick={onVoltar} style={{...S.botaoSec, width:'100%', marginTop:10, border:'none'}}>Voltar</button>}
@@ -3850,9 +3975,12 @@ function BannerStatus({ online, pendentes, sincronizando, onSincronizar }) {
 // Login do validador
 function LoginValidador({ onEntrar, onVoltar }) {
   const [senha, setSenha] = useState('');
+  const [nome, setNome] = useState('');
   const [erro, setErro] = useState(false);
+  const [erroNome, setErroNome] = useState(false);
   function entrar() {
-    if (senha === SENHA_VALIDADOR) onEntrar();
+    if (!nome.trim()) { setErroNome(true); return; }
+    if (senha === SENHA_VALIDADOR) onEntrar(nome.trim());
     else { setErro(true); setSenha(''); }
   }
   return (
@@ -3864,12 +3992,20 @@ function LoginValidador({ onEntrar, onVoltar }) {
         <h2 style={{margin:'0 0 6px', fontSize:22, fontWeight:800, color:COR.azul}}>Validador</h2>
         <p style={{margin:'0 0 20px', color:COR.cinza, fontSize:14}}>Validação de registros de campo</p>
         <div style={{position:'relative', marginBottom:12}}>
+          <User size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
+          <input value={nome} placeholder="Seu nome" autoFocus
+            style={{...S.campo, paddingLeft:42, borderColor: erroNome ? COR.vermelho : COR.borda}}
+            onChange={e => { setNome(e.target.value); setErroNome(false); }}
+            onKeyDown={e => e.key === 'Enter' && entrar()} />
+        </div>
+        <div style={{position:'relative', marginBottom:12}}>
           <Lock size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
-          <input type="password" value={senha} placeholder="Senha" autoFocus
+          <input type="password" value={senha} placeholder="Senha"
             style={{...S.campo, paddingLeft:42, borderColor: erro ? COR.vermelho : COR.borda}}
             onChange={e => { setSenha(e.target.value); setErro(false); }}
             onKeyDown={e => e.key === 'Enter' && entrar()} />
         </div>
+        {erroNome && <p style={{color:COR.vermelho, fontSize:13, margin:'0 0 12px', fontWeight:600}}>Informe seu nome.</p>}
         {erro && <p style={{color:COR.vermelho, fontSize:13, margin:'0 0 12px', fontWeight:600}}>Senha incorreta.</p>}
         <button onClick={entrar} style={{...S.botaoPrim, width:'100%', background:COR.verde}}>Entrar</button>
         {onVoltar && <button onClick={onVoltar} style={{...S.botaoSec, width:'100%', marginTop:10, border:'none'}}>Voltar</button>}
@@ -4144,11 +4280,13 @@ function App() {
   const [modo, setModo] = useState('inicial');     // 'inicial' | 'operador' | 'admin'
   const [logado, setLogado] = useState(false);      // login do admin
   const [logadoValidador, setLogadoValidador] = useState(false);
+  const [responsavel, setResponsavel] = useState(''); // nome de quem está operando (admin/validador)
   const [valObra, setValObra] = useState(null);
   const [valTela, setValTela] = useState('validar'); // 'validar' | 'relatorios'
   const [valObraRelatorio, setValObraRelatorio] = useState(null); // obra travada p/ relatório
   const [maquinas, setMaquinas] = useState([]);
   const [revisoes, setRevisoes] = useState([]);
+  const [movimentacoes, setMovimentacoes] = useState([]);
   const [obras, setObras] = useState([]);
   const [registros, setRegistros] = useState([]);
   const [checklistItens, setChecklistItens] = useState(CHECKLIST_PADRAO);
@@ -4410,30 +4548,49 @@ function App() {
   // --- Validação (validador) ---
   async function validarRegistro(reg, status, motivo) {
     if (!supabaseClient) return;
+    const nomeResp = responsavel || 'Validador';
+    // acrescenta nota na observação sobre quem validou/invalidou
+    const nota = status === 'validada'
+      ? `[Validado por ${nomeResp} em ${new Date().toLocaleString('pt-BR')}]`
+      : `[Invalidado por ${nomeResp} em ${new Date().toLocaleString('pt-BR')}${motivo ? ': ' + motivo : ''}]`;
+    const obsNova = (reg.observacao ? reg.observacao + '\n' : '') + nota;
     await supabaseClient.from('registros').update({
       validacao_status: status,
-      validacao_por: 'Validador',
+      validacao_por: nomeResp,
       validacao_em: new Date().toISOString(),
       validacao_motivo: status === 'invalidada' ? motivo : null,
+      observacao: obsNova,
     }).eq('id', reg.id);
+    await registrarMovimentacao({
+      responsavel: nomeResp, perfil: 'validador',
+      acao: status === 'validada' ? 'Validou registro' : 'Invalidou registro',
+      maquinaId: reg.maquinaId, maquinaNome: `${reg.maquinaCodigo ? reg.maquinaCodigo+' · ' : ''}${reg.maquinaDescricao}`,
+      dataRef: reg.dataRef || (reg.criadoEm ? new Date(reg.criadoEm).toISOString().slice(0,10) : null),
+      valorNovo: status, detalhe: status === 'invalidada' ? motivo : '',
+    });
     aviso(status === 'validada' ? 'Registro validado.' : 'Registro invalidado.');
     recarregar();
   }
   function sairValidador() {
-    setLogadoValidador(false); setValObra(null); setModo('inicial');
+    setLogadoValidador(false); setValObra(null); setModo('inicial'); setResponsavel('');
   }
 
   // --- Ajuste manual do admin (editar/criar status de um dia) ---
   async function salvarAjusteRegistro(ctx, dados) {
     if (!supabaseClient) return;
     const agora = new Date().toISOString();
+    const nomeResp = responsavel || 'Administrador';
     const temHori = dados.horimetro != null && !isNaN(Number(dados.horimetro));
+    const nomeMaq = ctx.maquina ? `${ctx.maquina.codigo ? ctx.maquina.codigo+' · ' : ''}${ctx.maquina.descricao}` : (ctx.registro ? `${ctx.registro.maquinaCodigo||''} ${ctx.registro.maquinaDescricao||''}` : '');
+    const nota = `[Status ajustado por ${nomeResp} em ${new Date().toLocaleString('pt-BR')}]`;
     if (ctx.registro && ctx.registro.id) {
+      const statusAntigo = ctx.registro.status;
       // edita registro existente
+      const obsBase = dados.observacao || '';
       const patch = {
         status: dados.status,
         motivo_parada: dados.status === 'nao_funcional' ? dados.motivo : null,
-        observacao: dados.observacao || null,
+        observacao: (obsBase ? obsBase + '\n' : '') + nota,
         ajuste_admin: true,
         ajuste_admin_em: agora,
       };
@@ -4447,6 +4604,12 @@ function App() {
         const maqId = (ctx.maquina && ctx.maquina.id) || ctx.registro.maquinaId;
         if (maqId) await supabaseClient.from('maquinas').update({ horimetro_atual: Number(dados.horimetro) }).eq('id', maqId).then(()=>{}, ()=>{});
       }
+      await registrarMovimentacao({
+        responsavel: nomeResp, perfil: 'admin', acao: 'Alterou status do dia',
+        maquinaId: (ctx.maquina && ctx.maquina.id) || ctx.registro.maquinaId, maquinaNome: nomeMaq,
+        dataRef: ctx.data || ctx.registro.dataRef, valorAntigo: statusAntigo, valorNovo: dados.status,
+        detalhe: dados.status === 'nao_funcional' ? (dados.motivo || '') : '',
+      });
       aviso('Registro atualizado.');
     } else {
       // cria registro do zero para o dia
@@ -4456,18 +4619,24 @@ function App() {
         maquina_codigo: m.codigo,
         maquina_descricao: m.descricao,
         obra: m.obra,
-        operador: 'Administrador',
+        operador: nomeResp,
         status: dados.status,
         horimetro: (dados.status === 'funcional' && temHori) ? Number(dados.horimetro) : null,
         horimetro_na: !(dados.status === 'funcional' && temHori),
         motivo_parada: dados.status === 'nao_funcional' ? dados.motivo : null,
-        observacao: dados.observacao || null,
+        observacao: (dados.observacao ? dados.observacao + '\n' : '') + nota,
         checklist: [],
         retroativo: true,
         data_ref: ctx.data,
         ajuste_admin: true,
         ajuste_admin_em: agora,
         criado_em: new Date(ctx.data + 'T12:00:00').toISOString(),
+      });
+      await registrarMovimentacao({
+        responsavel: nomeResp, perfil: 'admin', acao: 'Lançou status do dia',
+        maquinaId: m.id, maquinaNome: nomeMaq,
+        dataRef: ctx.data, valorAntigo: '(sem registro)', valorNovo: dados.status,
+        detalhe: dados.status === 'nao_funcional' ? (dados.motivo || '') : '',
       });
       aviso('Status lançado.');
     }
@@ -4535,7 +4704,7 @@ function App() {
 
   // ---------- MODO VALIDADOR ----------
   if (modo === 'validador') {
-    if (!logadoValidador) return <LoginValidador onEntrar={() => setLogadoValidador(true)} onVoltar={() => setModo('inicial')} />;
+    if (!logadoValidador) return <LoginValidador onEntrar={(nome) => { setResponsavel(nome); setLogadoValidador(true); }} onVoltar={() => setModo('inicial')} />;
     return (
       <div style={{minHeight:'100vh', background:COR.bg}}>
         <BannerStatus {...bannerProps} />
@@ -4639,7 +4808,7 @@ function App() {
   }
 
   // ---------- MODO ADMIN ----------
-  if (!logado) return <LoginAdmin onEntrar={() => setLogado(true)} onVoltar={() => setModo('inicial')} />;
+  if (!logado) return <LoginAdmin onEntrar={(nome) => { setResponsavel(nome); setLogado(true); }} onVoltar={() => setModo('inicial')} />;
 
   return (
     <div style={{minHeight:'100vh', background:COR.bg}}>
@@ -4679,7 +4848,10 @@ function App() {
                 <button onClick={() => setTela('checklist_maquina')} style={estilo(estA('checklist_maquina'))}>
                   <Factory size={16}/> Checklist/máq.
                 </button>
-                <button onClick={() => { setLogado(false); setModo('inicial'); setTela('lista'); }} style={estilo(false)}>
+                <button onClick={() => setTela('historico')} style={estilo(estA('historico'))}>
+                  <Clock size={16}/> Histórico
+                </button>
+                <button onClick={() => { setLogado(false); setModo('inicial'); setTela('lista'); setResponsavel(''); }} style={estilo(false)}>
                   <LogOut size={16}/> Sair
                 </button>
               </>
@@ -4731,6 +4903,9 @@ function App() {
             onVoltar={() => setTela('lista')}
             onSalvarMaquina={salvarChecklistMaquina}
           />
+        )}
+        {tela === 'historico' && (
+          <TelaHistorico onVoltar={() => setTela('lista')} />
         )}
       </main>
 
