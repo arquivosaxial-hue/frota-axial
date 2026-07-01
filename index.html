@@ -1574,8 +1574,15 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
     // tabela de km/horas por dia desta máquina
     y = tabelaTrabalhoPorDiaPdf(doc, R, maquina, y, W, () => { doc.addPage(); cabecalho(); });
 
-    // tabela de motivos da parada desta máquina (no período)
-    y = tabelaMotivosPdf(doc, registros.filter(r => r.maquinaId === maquina.id), y, W, () => { doc.addPage(); cabecalho(); });
+    // tabela de motivos da parada desta máquina (restrita ao período ini..fim)
+    const motivosNoPeriodo = registros.filter(r => {
+      if (r.maquinaId !== maquina.id) return false;
+      const d = r.dataRef || diaLocal(r.criadoEm);
+      if (ini && d < ini) return false;
+      if (fim && d > fim) return false;
+      return true;
+    });
+    y = tabelaMotivosPdf(doc, motivosNoPeriodo, y, W, () => { doc.addPage(); cabecalho(); });
   }
 
   doc.save(`calendario_${new Date().toISOString().slice(0,10)}.pdf`);
@@ -1600,8 +1607,8 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
   doc.text('Resumo por máquina', 14, y); y += 8;
 
   doc.setFontSize(8.5);
-  const head = ['Máquina', 'Dias func.', 'Dias parado', 'Trabalho', 'Tempo parado', 'Disponib.'];
-  const colX = [14, 78, 100, 124, 146, 178];
+  const head = ['Máquina', 'Dias func.', 'Dias parado', 'Trabalho', 'Disponib.'];
+  const colX = [14, 78, 104, 130, 165];
   doc.setFont('helvetica', 'bold'); doc.setFillColor(240,242,245); doc.rect(12, y-5, W-24, 7, 'F');
   head.forEach((h,i) => doc.text(h, colX[i], y)); y += 7;
   doc.setFont('helvetica', 'normal');
@@ -1618,8 +1625,7 @@ function gerarPdfPeriodo(resumo, registrosPeriodo, ini, fim) {
     doc.text(String(r.diasFuncionando), colX[1], y);
     doc.text(String(r.diasParado), colX[2], y);
     doc.text(r.maquina.possuiHorimetro ? String(r.horasTrabalhadas)+unidadeSufixo(r.maquina) : '—', colX[3], y);
-    doc.text(formatarDuracao(r.paradoMin || 0), colX[4], y);
-    doc.text(r.disponibilidade != null ? r.disponibilidade+'%' : '—', colX[5], y);
+    doc.text(r.disponibilidade != null ? r.disponibilidade+'%' : '—', colX[4], y);
     y += 5;
     doc.setDrawColor(235); doc.line(12, y-1.5, W-12, y-1.5);
     y += 2;
@@ -3424,7 +3430,6 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, onExclu
                 <span><b style={{color:COR.verde}}>{r.diasFuncionando}</b> <span style={{color:COR.cinza}}>dias func.</span></span>
                 <span><b style={{color:COR.vermelho}}>{r.diasParado}</b> <span style={{color:COR.cinza}}>dias parado</span></span>
                 {r.maquina.possuiHorimetro && <span><b style={{color:COR.azul}}>{r.horasTrabalhadas}{unidadeSufixo(r.maquina)}</b> <span style={{color:COR.cinza}}>{r.maquina.unidade==='km'?'rodados':'trabalhadas'}</span></span>}
-                <span><b style={{color:COR.amarelo}}>{formatarDuracao(r.paradoMin || 0)}</b> <span style={{color:COR.cinza}}>parado</span></span>
               </div>
               {Object.keys(r.motivos).length > 0 && (
                 <div style={{marginTop:7, fontSize:12.5, color:COR.cinza}}>
