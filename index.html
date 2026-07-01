@@ -1317,6 +1317,22 @@ function calcularResumoPeriodo(registros, maquinas, ini, fim) {
     return t >= iniMs && t <= fimMs;
   });
 
+  // registros funcionais logo APÓS o fim do período (fora do filtro), por máquina.
+  // Usados só para FECHAR o último dia do período (creditar a diferença),
+  // nunca para contar dias/status no calendário.
+  const fechamentoPos = {}; // maquinaId -> { valor, dia } (primeira leitura funcional após fim)
+  if (isFinite(fimMs)) {
+    const posFim = registros
+      .filter(r => new Date(r.criadoEm).getTime() > fimMs
+                && r.status === 'funcional' && r.horimetro != null)
+      .sort((a,b) => new Date(a.criadoEm) - new Date(b.criadoEm));
+    for (const r of posFim) {
+      if (fechamentoPos[r.maquinaId]) continue; // só a primeira de cada máquina
+      const dia = r.dataRef || diaLocal(r.criadoEm);
+      fechamentoPos[r.maquinaId] = { valor: r.horimetro, dia };
+    }
+  }
+
   const porMaquina = {};
   for (const m of maquinas) {
     porMaquina[m.id] = {
@@ -1376,6 +1392,15 @@ function calcularResumoPeriodo(registros, maquinas, ini, fim) {
         }
       }
       leituraAnterior = { valor: base.horimetro, dia };
+    }
+    // fecha o ÚLTIMO dia do período usando a primeira leitura funcional
+    // logo após o fim (ex.: exporta 01→30/06 e a leitura de 01/07 fecha o dia 30)
+    if (leituraAnterior != null && fechamentoPos[maqId]) {
+      const dif = fechamentoPos[maqId].valor - leituraAnterior.valor;
+      if (dif > 0) {
+        bucket.horasTrabalhadas += dif;
+        bucket.trabalhoPorDia[leituraAnterior.dia] = (bucket.trabalhoPorDia[leituraAnterior.dia] || 0) + dif;
+      }
     }
   }
 
