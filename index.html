@@ -708,15 +708,16 @@ function diasPendentesMaquina(maquina, registros) {
     registros
       .filter(r => r.maquinaId === maquina.id)
       .map(r => (r.dataRef || diaLocal(r.criadoEm)))
+      .filter(Boolean)
   );
   const pendentes = [];
   // limite inferior: o maior entre o corte global e a data de início do contrato da máquina
   const corteContrato = (maquina.dataInicioContrato && maquina.dataInicioContrato > DATA_INICIO_RETROATIVO)
     ? maquina.dataInicioContrato : DATA_INICIO_RETROATIVO;
   for (let i = 1; i <= DIAS_RETROATIVO; i++) {     // i=1 => ontem; nunca inclui hoje
-    const d = new Date(hoje + 'T00:00:00'); d.setDate(d.getDate() - i);
+    const d = new Date(hoje); d.setDate(d.getDate() - i);
     const iso = diaLocal(d);
-    if (iso < corteContrato) continue;             // nada antes do início do contrato (ou 01/06)
+    if (!iso || iso < corteContrato) continue;     // nada antes do início do contrato (ou 01/06)
     if (!diasComRegistro.has(iso)) pendentes.push(iso);
   }
   return pendentes.sort();                          // mais antigo primeiro
@@ -2679,10 +2680,11 @@ function OperadorSelecionaMaquina({ maquinas, obra, ultimoStatus, registros, onE
 // --- Operador: escolher data (hoje / complemento / dia atrasado) ---
 function OperadorEscolheData({ maquina, diasPendentes, jaFezHoje, onEscolher, onComplemento, onVoltar }) {
   function rotuloData(iso) {
+    if (!iso || typeof iso !== 'string' || iso.indexOf('-') === -1) return '—';
     const [a,m,d] = iso.split('-');
     const dt = new Date(iso + 'T00:00:00');
-    const semana = ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'][dt.getDay()];
-    return `${d}/${m} · ${semana}`;
+    const semana = isNaN(dt.getTime()) ? '' : ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'][dt.getDay()];
+    return `${d}/${m}${semana ? ' · ' + semana : ''}`;
   }
   return (
     <div style={{maxWidth:480, margin:'0 auto'}}>
