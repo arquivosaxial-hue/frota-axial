@@ -3239,7 +3239,7 @@ function CalendarioMaquina({ maquina, registros, ini, fim, onEditarDia }) {
   );
 }
 
-function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, obraFixa }) {
+function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, onExcluirDia, obraFixa }) {
   const hoje = diaLocal(new Date());
   const mesPassado = diaLocal(new Date(Date.now() - 30*86400000));
   const [ini, setIni] = useState(mesPassado);
@@ -3420,6 +3420,7 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, obraFix
           maquina={editandoDia.maquina} data={editandoDia.data} registro={editandoDia.registro}
           onFechar={() => setEditandoDia(null)}
           onSalvar={async (dados) => { await onSalvarAjuste(editandoDia, dados); setEditandoDia(null); }}
+          onExcluir={onExcluirDia ? async (reg) => { await onExcluirDia(reg); setEditandoDia(null); } : null}
         />
       )}
     </div>
@@ -3642,16 +3643,81 @@ function CardRevisao({ maquinas, compacto }) {
   );
 }
 
+// Tela dedicada de revisões pendentes (aba própria no admin)
+function TelaRevisoesPendentes({ maquinas, revisoes, onVoltar, onRegistrarRevisao }) {
+  const lista = maquinasParaRevisao(maquinas);
+  const [revisarMaq, setRevisarMaq] = useState(null);
+  const [historicoMaq, setHistoricoMaq] = useState(null);
+  return (
+    <div style={{maxWidth:760, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Revisões</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>{lista.length > 0 ? `${lista.length} máquina(s) pendente(s) de revisão` : 'Manutenção em dia'}</p>
+        </div>
+      </div>
+
+      {lista.length === 0 ? (
+        <div style={{...S.card, display:'flex', alignItems:'center', gap:10}}>
+          <CheckCircle2 size={20} color={COR.verde}/>
+          <span style={{fontSize:14, color:COR.texto, fontWeight:600}}>Nenhuma máquina pendente de revisão no momento.</span>
+        </div>
+      ) : (
+        <div style={{display:'flex', flexDirection:'column', gap:10}}>
+          {lista.map(({ m, mn }) => (
+            <div key={m.id} style={{...S.card, padding:'14px 16px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:10, flexWrap:'wrap'}}>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontSize:15, fontWeight:800, color:COR.texto}}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</div>
+                  <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>{m.obra || 'Sem obra'} · {Math.round(m.horimetroAtual)}{unidadeSufixo(m)}</div>
+                </div>
+                {mn.vencido
+                  ? <Badge cor={COR.vermelho} bg={COR.vermelhoBg}><AlertTriangle size={11}/> Vencida {Math.abs(mn.restante)}{unidadeSufixo(m)}</Badge>
+                  : <Badge cor={COR.amarelo} bg={COR.amareloBg}><Clock size={11}/> Faltam {mn.restante}{unidadeSufixo(m)}</Badge>}
+              </div>
+              <BarraManutencao man={mn} suf={unidadeSufixo(m)} />
+              <div style={{display:'flex', gap:8, marginTop:12, flexWrap:'wrap'}}>
+                <button onClick={() => setRevisarMaq(m)} style={{...S.botaoPrim, padding:'8px 14px', fontSize:13.5, flex:1}}><Wrench size={15}/> Registrar revisão</button>
+                <button onClick={() => setHistoricoMaq(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1}}><Clock size={15}/> Histórico</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {revisarMaq && (
+        <RegistrarRevisao maquina={revisarMaq} onFechar={() => setRevisarMaq(null)}
+          onSalvar={async (dados) => { await onRegistrarRevisao(revisarMaq, dados); setRevisarMaq(null); }} />
+      )}
+      {historicoMaq && (
+        <HistoricoRevisoes maquina={historicoMaq} revisoes={revisoes} onFechar={() => setHistoricoMaq(null)} />
+      )}
+    </div>
+  );
+}
+
 // ============================================================
 // Editor de status de um dia (admin) — edita registro existente ou cria do zero
-function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
+function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar, onExcluir }) {
   const [status, setStatus] = useState(registro ? registro.status : 'funcional');
   const [motivo, setMotivo] = useState(registro ? (registro.motivoParada || '') : '');
   const [obs, setObs] = useState(registro ? (registro.observacao || '') : '');
   const [horimetro, setHorimetro] = useState(registro && registro.horimetro != null ? String(registro.horimetro) : '');
   const [salvando, setSalvando] = useState(false);
+  const [modoExcluir, setModoExcluir] = useState(false);
+  const [senhaExc, setSenhaExc] = useState('');
+  const [erroExc, setErroExc] = useState('');
+  const [excluindo, setExcluindo] = useState(false);
   const temMedidor = maquina.possuiHorimetro !== false;
   const sufMed = maquina.unidade === 'km' ? 'km' : 'h';
+
+  async function confirmarExclusao() {
+    if (senhaExc !== SENHA_ADMIN) { setErroExc('Senha incorreta.'); return; }
+    setExcluindo(true);
+    await onExcluir(registro);
+    setExcluindo(false);
+  }
 
   async function salvar() {
     if (status === 'nao_funcional' && !motivo) return;
@@ -3669,6 +3735,11 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
           <div>
             <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul}}>{registro ? 'Editar status' : 'Lançar status'}</h3>
             <p style={{margin:'3px 0 0', fontSize:13, color:COR.cinza}}>{maquina.codigo ? maquina.codigo+' · ' : ''}{maquina.descricao} · {dataBR}</p>
+            {registro && registro.operador && (
+              <p style={{margin:'5px 0 0', fontSize:13, color:COR.texto, fontWeight:600, display:'flex', alignItems:'center', gap:5}}>
+                <User size={14} color={COR.cinza}/> Operador: {registro.operador}
+              </p>
+            )}
           </div>
           <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:9}}><X size={18}/></button>
         </div>
@@ -3724,6 +3795,33 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
           <button onClick={onFechar} style={S.botaoSec}>Cancelar</button>
         </div>
         <p style={{fontSize:11.5, color:COR.cinza, marginTop:12, lineHeight:1.5}}>O registro ficará marcado como ajuste do administrador. Isso não altera o cálculo de km/horas (baseado nas leituras de horímetro).</p>
+
+        {registro && registro.id && onExcluir && (
+          <div style={{marginTop:14, paddingTop:14, borderTop:`1px solid ${COR.borda}`}}>
+            {!modoExcluir ? (
+              <button onClick={() => { setModoExcluir(true); setErroExc(''); setSenhaExc(''); }} style={{width:'100%', padding:'10px', borderRadius:10, border:`1.5px solid #FECACA`, background:'#fff', color:COR.vermelho, fontSize:13.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:7}}>
+                <X size={16}/> Excluir o registro deste dia
+              </button>
+            ) : (
+              <div style={{background:COR.vermelhoBg, border:`1.5px solid #FECACA`, borderRadius:11, padding:'13px 14px'}}>
+                <p style={{margin:'0 0 10px', fontSize:13, color:'#991B1B', fontWeight:600, lineHeight:1.45}}>
+                  Isso apaga apenas este registro ({dataBR}) desta máquina. Digite a senha do administrador para confirmar.
+                </p>
+                <input type="password" value={senhaExc} placeholder="Senha do administrador" autoFocus
+                  style={{...S.campo, marginBottom:8, borderColor: erroExc ? COR.vermelho : COR.borda}}
+                  onChange={e => { setSenhaExc(e.target.value); setErroExc(''); }}
+                  onKeyDown={e => e.key === 'Enter' && confirmarExclusao()} />
+                {erroExc && <p style={{color:COR.vermelho, fontSize:12.5, margin:'0 0 8px', fontWeight:600}}>{erroExc}</p>}
+                <div style={{display:'flex', gap:8}}>
+                  <button onClick={confirmarExclusao} disabled={excluindo} style={{flex:1, padding:'10px', borderRadius:9, border:'none', background:COR.vermelho, color:'#fff', fontSize:13.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', opacity: excluindo?.6:1}}>
+                    {excluindo ? 'Excluindo…' : 'Confirmar exclusão'}
+                  </button>
+                  <button onClick={() => setModoExcluir(false)} style={{...S.botaoSec, padding:'10px 14px', fontSize:13.5}}>Cancelar</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3732,7 +3830,7 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar }) {
 // ============================================================
 // ADMIN: TELA DE REGISTROS (checklists recebidos)
 // ============================================================
-function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalvarAjuste }) {
+function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalvarAjuste, onExcluirDia }) {
   const hoje = diaLocal(new Date());
   const mesPassado = diaLocal(new Date(Date.now() - 30*86400000));
   const [ini, setIni] = useState(mesPassado);
@@ -3783,9 +3881,6 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
         <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
         <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Registros recebidos</h2>
       </div>
-
-      {/* Revisões pendentes */}
-      <div style={{marginBottom:18}}><CardRevisao maquinas={maquinas} /></div>
 
       {/* Filtro de período */}
       <div style={{...S.cardFiltro, display:'flex', flexWrap:'wrap', gap:14, alignItems:'flex-end', marginBottom:18}}>
@@ -3948,6 +4043,7 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
           maquina={editando.maquina} data={editando.data} registro={editando.registro}
           onFechar={() => setEditando(null)}
           onSalvar={async (dados) => { await onSalvarAjuste(editando, dados); setEditando(null); }}
+          onExcluir={onExcluirDia ? async (reg) => { await onExcluirDia(reg); setEditando(null); } : null}
         />
       )}
     </div>
@@ -4433,6 +4529,26 @@ function App() {
     recarregar();
   }
 
+  async function excluirRegistroDia(reg) {
+    if (!supabaseClient || !reg || !reg.id) return;
+    // remove fotos associadas do storage, se houver
+    try {
+      const caminhos = [];
+      if (reg.fotoUrl) { const p = reg.fotoUrl.split('/fotos/')[1]; if (p) caminhos.push(p); }
+      (reg.fotosExtras || []).forEach(u => { const p = (u || '').split('/fotos/')[1]; if (p) caminhos.push(p); });
+      if (caminhos.length) await supabaseClient.storage.from('fotos').remove(caminhos);
+    } catch (e) { /* ignora falha de remoção de foto */ }
+    await supabaseClient.from('registros').delete().eq('id', reg.id);
+    await registrarMovimentacao({
+      responsavel: responsavel || 'Administrador', perfil: 'admin', acao: 'Excluiu registro do dia',
+      maquinaId: reg.maquinaId, maquinaNome: `${reg.maquinaCodigo ? reg.maquinaCodigo+' · ' : ''}${reg.maquinaDescricao}`,
+      dataRef: reg.dataRef || (reg.criadoEm ? diaLocal(reg.criadoEm) : null),
+      valorAntigo: reg.status, valorNovo: '(excluído)',
+    });
+    aviso('Registro do dia excluído.');
+    recarregar();
+  }
+
   // --- Registro do operador ---
   async function salvarRegistro(dados) {
     if (!opMaquina) return;
@@ -4862,6 +4978,9 @@ function App() {
                 <button onClick={() => setTela('checklist_maquina')} style={estilo(estA('checklist_maquina'))}>
                   <Factory size={16}/> Checklist/máq.
                 </button>
+                <button onClick={() => setTela('revisoes')} style={estilo(estA('revisoes'))}>
+                  <Wrench size={16}/> Revisões
+                </button>
                 <button onClick={() => setTela('historico')} style={estilo(estA('historico'))}>
                   <Clock size={16}/> Histórico
                 </button>
@@ -4897,6 +5016,7 @@ function App() {
             registros={registros} maquinas={maquinas}
             onVoltar={() => setTela('lista')}
             onSalvarAjuste={salvarAjusteRegistro}
+            onExcluirDia={excluirRegistroDia}
           />
         )}
         {tela === 'registros' && (
@@ -4904,6 +5024,7 @@ function App() {
             registros={registros} maquinas={maquinas}
             onVoltar={() => setTela('lista')}
             onSalvarAjuste={salvarAjusteRegistro}
+            onExcluirDia={excluirRegistroDia}
             onExcluirPeriodo={async (ini, fim, obra) => {
               const r = await excluirRegistrosPeriodo(registros, ini, fim, obra);
               await recarregar();
@@ -4920,6 +5041,9 @@ function App() {
         )}
         {tela === 'historico' && (
           <TelaHistorico onVoltar={() => setTela('lista')} />
+        )}
+        {tela === 'revisoes' && (
+          <TelaRevisoesPendentes maquinas={maquinas} revisoes={revisoes} onVoltar={() => setTela('lista')} onRegistrarRevisao={registrarRevisao} />
         )}
       </main>
 
