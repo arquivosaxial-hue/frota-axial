@@ -781,11 +781,27 @@ function registroDoBanco(l) {
 
 async function listarRegistros() {
   if (!supabaseClient || !navigator.onLine) return [];
+  // O Supabase devolve no máximo 1000 linhas por consulta. Com a base crescendo,
+  // uma consulta única cortava os registros mais antigos (eles sumiam dos
+  // relatórios mesmo existindo no banco). Aqui buscamos em blocos até acabar.
+  const TAM = 1000;
+  const MAX_BLOCOS = 50;            // trava de segurança: até 50.000 registros
   try {
-    const { data, error } = await comTimeout(
-      supabaseClient.from('registros').select('*').is('excluido_em', null).order('criado_em', { ascending: false }), 8000);
-    if (error) throw error;
-    return (data || []).map(registroDoBanco);
+    let todos = [];
+    for (let bloco = 0; bloco < MAX_BLOCOS; bloco++) {
+      const de = bloco * TAM;
+      const ate = de + TAM - 1;
+      const { data, error } = await comTimeout(
+        supabaseClient.from('registros').select('*')
+          .is('excluido_em', null)
+          .order('criado_em', { ascending: false })
+          .range(de, ate), 15000);
+      if (error) throw error;
+      const lote = data || [];
+      todos = todos.concat(lote);
+      if (lote.length < TAM) break;   // último bloco
+    }
+    return todos.map(registroDoBanco);
   } catch (e) { console.warn('listarRegistros offline/falha', e); return []; }
 }
 
