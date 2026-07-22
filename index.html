@@ -783,7 +783,7 @@ async function listarRegistros() {
   if (!supabaseClient || !navigator.onLine) return [];
   try {
     const { data, error } = await comTimeout(
-      supabaseClient.from('registros').select('*').order('criado_em', { ascending: false }), 8000);
+      supabaseClient.from('registros').select('*').is('excluido_em', null).order('criado_em', { ascending: false }), 8000);
     if (error) throw error;
     return (data || []).map(registroDoBanco);
   } catch (e) { console.warn('listarRegistros offline/falha', e); return []; }
@@ -867,32 +867,29 @@ function caminhoDaFotoUrl(url) {
 }
 
 // Exclui todos os registros de um período + as fotos no Storage
-async function excluirRegistrosPeriodo(registros, ini, fim, obra) {
+async function excluirRegistrosPeriodo(registros, ini, fim, obra, maquinaId, empresa, quem) {
   if (!supabaseClient) return { apagados: 0 };
-  const iniMs = ini ? new Date(ini + 'T00:00:00').getTime() : -Infinity;
-  const fimMs = fim ? new Date(fim + 'T23:59:59').getTime() : Infinity;
+  // LIXEIRA (soft delete): nada e apagado de verdade; marca excluido_em/excluido_por.
+  // Recuperavel por 30 dias (ver setup_lixeira.sql).
+  // Respeita TODOS os filtros da tela e usa dataRef (dia de referencia).
   const alvo = registros.filter(r => {
-    const t = new Date(r.criadoEm).getTime();
-    if (t < iniMs || t > fimMs) return false;
+    const dia = r.dataRef || diaLocal(r.criadoEm);
+    if (!dia) return false;
+    if (ini && dia < ini) return false;
+    if (fim && dia > fim) return false;
     if (obra && obra !== 'todas' && r.obra !== obra) return false;
+    if (maquinaId && maquinaId !== 'todas' && r.maquinaId !== maquinaId) return false;
+    if (empresa && empresa !== 'todas' && (r.empresa || '') !== empresa) return false;
     return true;
   });
   if (alvo.length === 0) return { apagados: 0 };
 
-  // 1) junta os caminhos de todas as fotos (painel + extras)
-  const caminhos = [];
-  for (const r of alvo) {
-    const p = caminhoDaFotoUrl(r.fotoUrl); if (p) caminhos.push(p);
-    for (const u of (r.fotosExtras || [])) { const c = caminhoDaFotoUrl(u); if (c) caminhos.push(c); }
-  }
-  if (caminhos.length) {
-    try { await supabaseClient.storage.from('fotos').remove(caminhos); }
-    catch (e) { console.error('remover fotos', e); }
-  }
-
-  // 2) apaga os registros (em lotes por id)
+  // Fotos NAO sao removidas do storage: se o registro voltar da lixeira,
+  // as imagens precisam continuar la.
   const ids = alvo.map(r => r.id);
-  const { error } = await supabaseClient.from('registros').delete().in('id', ids);
+  const { error } = await supabaseClient.from('registros')
+    .update({ excluido_em: new Date().toISOString(), excluido_por: quem || 'Administrador' })
+    .in('id', ids);
   if (error) { console.error('excluir registros', error); throw error; }
   return { apagados: alvo.length };
 }
@@ -1313,8 +1310,11 @@ function calcularResumoPeriodo(registros, maquinas, ini, fim) {
   const iniMs = ini ? new Date(ini + 'T00:00:00').getTime() : -Infinity;
   const fimMs = fim ? new Date(fim + 'T23:59:59').getTime() : Infinity;
   const noPeriodo = registros.filter(r => {
-    const t = new Date(r.criadoEm).getTime();
-    return t >= iniMs && t <= fimMs;
+    const dia = r.dataRef || diaLocal(r.criadoEm);
+    if (!dia) return false;
+    if (ini && dia < ini) return false;
+    if (fim && dia > fim) return false;
+    return true;
   });
 
   // registros funcionais logo APÓS o fim do período (fora do filtro), por máquina.
@@ -1436,8 +1436,9 @@ function diasSemRegistro(registros, maquinas, ini, fim) {
   // dias com registro por máquina
   const comRegistro = {};
   for (const r of registros) {
-    const dia = diaLocal(r.criadoEm);
-    if (dia < ini || dia > fim) continue;
+    // usa o dia a que o registro se refere (retroativo), nao a data de digitacao
+    const dia = r.dataRef || diaLocal(r.criadoEm);
+    if (!dia || dia < ini || dia > fim) continue;
     (comRegistro[r.maquinaId] = comRegistro[r.maquinaId] || new Set()).add(dia);
   }
   return maquinas.filter(m => m.ativa).map(m => {
@@ -3303,10 +3304,12 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, onExclu
   const faltas = diasSemRegistro(registrosFiltrados, maquinasFiltradas, ini, fim);
   const totalAtivas = maquinas.filter(m => m.ativa).length;
   const registrosPeriodo = registrosFiltrados.filter(r => {
-    const t = new Date(r.criadoEm).getTime();
-    const a = ini ? new Date(ini+'T00:00:00').getTime() : -Infinity;
-    const b = fim ? new Date(fim+'T23:59:59').getTime() : Infinity;
-    return t >= a && t <= b;
+    // filtra pelo dia de referencia (retroativo), nao pela data de digitacao
+    const dia = r.dataRef || diaLocal(r.criadoEm);
+    if (!dia) return false;
+    if (ini && dia < ini) return false;
+    if (fim && dia > fim) return false;
+    return true;
   });
 
   return (
@@ -3897,9 +3900,9 @@ function TelaRegistros({ registros, maquinas, onVoltar, onExcluirPeriodo, onSalv
     if (senha !== SENHA_ADMIN) { setErroSenha('Senha incorreta.'); return; }
     setExcluindo(true);
     try {
-      const r = await onExcluirPeriodo(ini, fim, fObra);
+      const r = await onExcluirPeriodo(ini, fim, fObra, fMaquina);
       setMostrarExcluir(false); setSenha('');
-      alert(`${r.apagados} registro(s) excluído(s) e fotos removidas.`);
+      alert(`${r.apagados} registro(s) enviado(s) para a lixeira.\n\nNada foi apagado em definitivo: da para recuperar por 30 dias.`);
     } catch (e) {
       setErroSenha('Erro ao excluir. Tente novamente.');
     } finally { setExcluindo(false); }
@@ -4561,21 +4564,17 @@ function App() {
 
   async function excluirRegistroDia(reg) {
     if (!supabaseClient || !reg || !reg.id) return;
-    // remove fotos associadas do storage, se houver
-    try {
-      const caminhos = [];
-      if (reg.fotoUrl) { const p = reg.fotoUrl.split('/fotos/')[1]; if (p) caminhos.push(p); }
-      (reg.fotosExtras || []).forEach(u => { const p = (u || '').split('/fotos/')[1]; if (p) caminhos.push(p); });
-      if (caminhos.length) await supabaseClient.storage.from('fotos').remove(caminhos);
-    } catch (e) { /* ignora falha de remoção de foto */ }
-    await supabaseClient.from('registros').delete().eq('id', reg.id);
+    // LIXEIRA: nao apaga o registro nem as fotos - so marca como excluido.
+    await supabaseClient.from('registros')
+      .update({ excluido_em: new Date().toISOString(), excluido_por: responsavel || 'Administrador' })
+      .eq('id', reg.id);
     await registrarMovimentacao({
-      responsavel: responsavel || 'Administrador', perfil: 'admin', acao: 'Excluiu registro do dia',
+      responsavel: responsavel || 'Administrador', perfil: 'admin', acao: 'Enviou registro do dia para a lixeira',
       maquinaId: reg.maquinaId, maquinaNome: `${reg.maquinaCodigo ? reg.maquinaCodigo+' · ' : ''}${reg.maquinaDescricao}`,
       dataRef: reg.dataRef || (reg.criadoEm ? diaLocal(reg.criadoEm) : null),
-      valorAntigo: reg.status, valorNovo: '(excluído)',
+      valorAntigo: reg.status, valorNovo: '(na lixeira)',
     });
-    aviso('Registro do dia excluído.');
+    aviso('Registro enviado para a lixeira (recuperável por 30 dias).');
     recarregar();
   }
 
@@ -5055,8 +5054,17 @@ function App() {
             onVoltar={() => setTela('lista')}
             onSalvarAjuste={salvarAjusteRegistro}
             onExcluirDia={excluirRegistroDia}
-            onExcluirPeriodo={async (ini, fim, obra) => {
-              const r = await excluirRegistrosPeriodo(registros, ini, fim, obra);
+            onExcluirPeriodo={async (ini, fim, obra, maquinaId) => {
+              const quem = responsavel || 'Administrador';
+              const r = await excluirRegistrosPeriodo(registros, ini, fim, obra, maquinaId, 'todas', quem);
+              if (r.apagados > 0) {
+                const mq = maquinas.find(m => m.id === maquinaId);
+                await registrarMovimentacao({
+                  responsavel: quem, perfil: 'admin', acao: 'Enviou registros para a lixeira',
+                  maquinaNome: mq ? `${mq.codigo ? mq.codigo+' · ' : ''}${mq.descricao}` : 'Todas as máquinas',
+                  detalhe: `${r.apagados} registro(s) · período ${ini} a ${fim} · obra: ${obra || 'todas'}`,
+                });
+              }
               await recarregar();
               return r;
             }}
