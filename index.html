@@ -4515,7 +4515,32 @@ function App() {
       if (!m) return r; // máquina excluída: mantém o nome que estava salvo
       return { ...r, maquinaCodigo: m.codigo || '', maquinaDescricao: m.descricao || r.maquinaDescricao, obra: m.obra || r.obra };
     });
-    setMaquinas(ms); setObras(os); setRegistros(rsAtualizados); setChecklistItens(ci); setRevisoes(rv); setCarregando(false);
+
+    // Horímetro/hodômetro atual: derivado da LEITURA MAIS RECENTE dos registros,
+    // não do campo horimetro_atual do cadastro.
+    // Motivo: o campo do cadastro só era atualizado em checklists NÃO retroativos
+    // e com status 'funcional', então ficava defasado quando havia lançamento
+    // retroativo ou 'sem atividade' — e isso atrasava o alerta de manutenção.
+    // Considera 'funcional' e 'sem_atividade' (ambos exigem leitura do medidor);
+    // 'nao_funcional' não exige leitura, por isso fica de fora.
+    const ultimaLeitura = {}; // maquinaId -> { dia, valor }
+    for (const r of rsAtualizados) {
+      if (r.horimetro == null || !(r.status === 'funcional' || r.status === 'sem_atividade')) continue;
+      const dia = r.dataRef || diaLocal(r.criadoEm);
+      if (!dia) continue;
+      const atual = ultimaLeitura[r.maquinaId];
+      // desempate no mesmo dia: fica a de criadoEm mais recente
+      if (!atual || dia > atual.dia || (dia === atual.dia && new Date(r.criadoEm) >= new Date(atual.criadoEm))) {
+        ultimaLeitura[r.maquinaId] = { dia, valor: Number(r.horimetro), criadoEm: r.criadoEm };
+      }
+    }
+    const msHidratadas = ms.map(m => {
+      const u = ultimaLeitura[m.id];
+      if (!u || !isFinite(u.valor)) return m;
+      return { ...m, horimetroAtual: u.valor };
+    });
+
+    setMaquinas(msHidratadas); setObras(os); setRegistros(rsAtualizados); setChecklistItens(ci); setRevisoes(rv); setCarregando(false);
   }
 
   // Carrega dados quando entra em operador ou admin
