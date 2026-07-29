@@ -697,7 +697,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v55';
+const APP_VERSION = 'v56';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -4541,16 +4541,25 @@ function App() {
     // retroativo ou 'sem atividade' — e isso atrasava o alerta de manutenção.
     // Considera 'funcional' e 'sem_atividade' (ambos exigem leitura do medidor);
     // 'nao_funcional' não exige leitura, por isso fica de fora.
-    const ultimaLeitura = {}; // maquinaId -> { dia, valor }
+    const ultimaLeitura = {}; // maquinaId -> { dia, valor, criadoEm, ajuste }
     for (const r of rsAtualizados) {
       if (r.horimetro == null || !(r.status === 'funcional' || r.status === 'sem_atividade')) continue;
       const dia = r.dataRef || diaLocal(r.criadoEm);
       if (!dia) continue;
+      const ajuste = r.ajusteAdmin === true;
       const atual = ultimaLeitura[r.maquinaId];
-      // desempate no mesmo dia: fica a de criadoEm mais recente
-      if (!atual || dia > atual.dia || (dia === atual.dia && new Date(r.criadoEm) >= new Date(atual.criadoEm))) {
-        ultimaLeitura[r.maquinaId] = { dia, valor: Number(r.horimetro), criadoEm: r.criadoEm };
+      // escolhe a leitura mais recente por data; em empate de data, a corrigida
+      // pelo admin (ajusteAdmin) tem prioridade sobre a leitura crua do operador
+      // (o admin conferiu o valor); persistindo o empate, a de criadoEm mais recente.
+      let venceu = false;
+      if (!atual) venceu = true;
+      else if (dia > atual.dia) venceu = true;
+      else if (dia === atual.dia) {
+        if (ajuste && !atual.ajuste) venceu = true;               // ajuste do admin ganha
+        else if (ajuste === atual.ajuste &&
+                 new Date(r.criadoEm) >= new Date(atual.criadoEm)) venceu = true; // senão, mais recente
       }
+      if (venceu) ultimaLeitura[r.maquinaId] = { dia, valor: Number(r.horimetro), criadoEm: r.criadoEm, ajuste };
     }
     const msHidratadas = ms.map(m => {
       const u = ultimaLeitura[m.id];
