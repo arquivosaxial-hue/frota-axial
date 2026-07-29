@@ -697,7 +697,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v56';
+const APP_VERSION = 'v57';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -3789,7 +3789,10 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar, onExclui
   async function salvar() {
     if (status === 'nao_funcional' && !motivo) return;
     setSalvando(true);
-    const horiNum = (status === 'funcional' && temMedidor && horimetro !== '' && !isNaN(Number(horimetro))) ? Number(horimetro) : null;
+    // horímetro é editável em 'funcional' E 'sem_atividade' (ambos exigem medidor);
+    // só 'nao_funcional' fica sem leitura.
+    const permiteMedidor = temMedidor && (status === 'funcional' || status === 'sem_atividade');
+    const horiNum = (permiteMedidor && horimetro !== '' && !isNaN(Number(horimetro))) ? Number(horimetro) : null;
     await onSalvar({ status, motivo: status === 'nao_funcional' ? motivo : '', observacao: obs, horimetro: horiNum });
     setSalvando(false);
   }
@@ -3841,7 +3844,7 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar, onExclui
           </div>
         )}
 
-        {status === 'funcional' && temMedidor && (
+        {(status === 'funcional' || status === 'sem_atividade') && temMedidor && (
           <div style={{marginBottom:14}}>
             <label style={S.rotulo}>{maquina.unidade === 'km' ? 'Hodômetro (km)' : 'Horímetro (horas)'}</label>
             <div style={{position:'relative'}}>
@@ -4821,13 +4824,15 @@ function App() {
         ajuste_admin: true,
         ajuste_admin_em: agora,
       };
-      if (dados.status === 'funcional' && temHori) {
+      // horímetro é gravável em 'funcional' e 'sem_atividade' (ambos exigem medidor)
+      const gravaHori = temHori && (dados.status === 'funcional' || dados.status === 'sem_atividade');
+      if (gravaHori) {
         patch.horimetro = Number(dados.horimetro);
         patch.horimetro_na = false;
       }
       await supabaseClient.from('registros').update(patch).eq('id', ctx.registro.id);
       // se for a leitura mais recente da máquina, atualiza o medidor atual
-      if (dados.status === 'funcional' && temHori) {
+      if (gravaHori) {
         const maqId = (ctx.maquina && ctx.maquina.id) || ctx.registro.maquinaId;
         if (maqId) await supabaseClient.from('maquinas').update({ horimetro_atual: Number(dados.horimetro) }).eq('id', maqId).then(()=>{}, ()=>{});
       }
@@ -4848,8 +4853,8 @@ function App() {
         obra: m.obra,
         operador: nomeResp,
         status: dados.status,
-        horimetro: (dados.status === 'funcional' && temHori) ? Number(dados.horimetro) : null,
-        horimetro_na: !(dados.status === 'funcional' && temHori),
+        horimetro: ((dados.status === 'funcional' || dados.status === 'sem_atividade') && temHori) ? Number(dados.horimetro) : null,
+        horimetro_na: !((dados.status === 'funcional' || dados.status === 'sem_atividade') && temHori),
         motivo_parada: dados.status === 'nao_funcional' ? dados.motivo : null,
         observacao: (dados.observacao ? dados.observacao + '\n' : '') + nota,
         checklist: [],
