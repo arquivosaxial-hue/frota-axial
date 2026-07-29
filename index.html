@@ -1459,8 +1459,13 @@ function diasSemRegistro(registros, maquinas, ini, fim) {
   }
   return maquinas.filter(m => m.ativa).map(m => {
     const feitos = comRegistro[m.id] || new Set();
-    const faltantes = dias.filter(dia => !feitos.has(dia));
-    return { maquina: m, faltantes, totalDias: dias.length };
+    // não cobra dias antes do que a máquina pode lançar: início de contrato
+    // (se posterior à janela retroativa) ou a própria janela retroativa.
+    // Mesmo critério do lançamento (corteContrato), para não pedir o impossível.
+    const corte = (m.dataInicioContrato && m.dataInicioContrato > DATA_INICIO_RETROATIVO)
+      ? m.dataInicioContrato : DATA_INICIO_RETROATIVO;
+    const faltantes = dias.filter(dia => dia >= corte && !feitos.has(dia));
+    return { maquina: m, faltantes, totalDias: dias.filter(dia => dia >= corte).length };
   }).filter(x => x.faltantes.length > 0);
 }
 
