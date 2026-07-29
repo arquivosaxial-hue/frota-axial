@@ -697,7 +697,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v58';
+const APP_VERSION = 'v59';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -3776,6 +3776,7 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar, onExclui
   const [senhaExc, setSenhaExc] = useState('');
   const [erroExc, setErroExc] = useState('');
   const [excluindo, setExcluindo] = useState(false);
+  const [verFoto, setVerFoto] = useState(false);
   const temMedidor = maquina.possuiHorimetro !== false;
   const sufMed = maquina.unidade === 'km' ? 'km' : 'h';
 
@@ -3852,9 +3853,14 @@ function EditorStatusDia({ maquina, data, registro, onSalvar, onFechar, onExclui
               <span style={{position:'absolute', right:14, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13.5, fontWeight:600}}>{sufMed}</span>
             </div>
             <p style={{fontSize:12, color:COR.cinza, margin:'6px 2px 0'}}>Corrija aqui se houve erro de digitação na leitura. Deixe em branco para não alterar.</p>
-            {registro && registro.fotoUrl && (
+            {registro && registro.fotoUrl && !verFoto && (
+              <button onClick={() => setVerFoto(true)}
+                style={{marginTop:10, width:'100%', padding:'10px', borderRadius:10, border:`1.5px solid ${COR.borda}`, background:'#fff', color:COR.azul, fontSize:13.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:7}}>
+                <Camera size={17}/> Ver foto do painel
+              </button>
+            )}
+            {registro && registro.fotoUrl && verFoto && (
               <div style={{marginTop:10}}>
-                <label style={{...S.rotulo, marginBottom:6}}>Foto do painel (conferência)</label>
                 <a href={registro.fotoUrl} target="_blank" rel="noopener" style={{display:'block'}}>
                   <img src={registro.fotoUrl} alt="painel"
                        style={{width:'100%', maxHeight:220, objectFit:'contain', borderRadius:10, border:`1px solid ${COR.borda}`, background:'#f8fafc'}}/>
