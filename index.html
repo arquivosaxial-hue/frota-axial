@@ -697,7 +697,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v54';
+const APP_VERSION = 'v55';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -1149,7 +1149,18 @@ function tabelaTrabalhoPorDiaPdf(doc, R, maquina, y, W, addPageCb) {
   const unidade = maquina.unidade === 'km' ? 'km' : 'h';
   const titulo = maquina.unidade === 'km' ? 'QUILOMETRAGEM POR DIA' : 'HORAS POR DIA';
   const porDia = (R && R.trabalhoPorDia) ? R.trabalhoPorDia : {};
-  const dias = Object.keys(porDia).filter(d => porDia[d] > 0).sort();
+  // Opção A: lista TODOS os dias com registro funcional do período, mesmo os
+  // que ficaram com 0 (leitura igual à anterior, ou sem diferença creditada).
+  // Antes, só apareciam dias com valor > 0. Não altera o cálculo nem o total.
+  const diasFuncionais = new Set();
+  ((R && R.registros) || []).forEach(r => {
+    if (r.status !== 'funcional') return; // sem_atividade e não_funcional ficam fora
+    const dia = r.dataRef || (r.criadoEm ? diaLocal(r.criadoEm) : null);
+    if (dia) diasFuncionais.add(dia);
+  });
+  // inclui também qualquer dia que tenha valor creditado (garantia extra)
+  Object.keys(porDia).forEach(d => { if (porDia[d] > 0) diasFuncionais.add(d); });
+  const dias = Array.from(diasFuncionais).sort();
   const H = 297;
 
   if (y + 16 > H - 12) { addPageCb && addPageCb(); y = 34; }
@@ -1180,7 +1191,7 @@ function tabelaTrabalhoPorDiaPdf(doc, R, maquina, y, W, addPageCb) {
   let total = 0;
   for (const d of dias) {
     if (y > H - 14) { addPageCb && addPageCb(); y = 34; }
-    const v = porDia[d];
+    const v = porDia[d] || 0;
     total += v;
     const op = opPorDia[d] ? opPorDia[d].trim() : '—';
     doc.text(d.split('-').reverse().slice(0,2).join('/'), colX[0], y);
