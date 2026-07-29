@@ -696,6 +696,8 @@ function checklistDaMaquina(maquina, padrao) {
 
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
+// Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
+const APP_VERSION = 'v54';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -2606,7 +2608,7 @@ function TelaInicial({ onOperador, onValidador, onAdmin, meusRegistros, onBaixar
         </div>
       )}
 
-      <p style={{color:'rgba(255,255,255,.4)', fontSize:12, marginTop:32, textAlign:'center'}}>Construtora Axial · Gestão de Frota</p>
+      <p style={{color:'rgba(255,255,255,.4)', fontSize:12, marginTop:32, textAlign:'center'}}>Construtora Axial · Gestão de Frota · {APP_VERSION}</p>
     </div>
   );
 }
