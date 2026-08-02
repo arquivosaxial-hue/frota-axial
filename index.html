@@ -697,7 +697,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v59';
+const APP_VERSION = 'v60';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -1605,6 +1605,55 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
       doc.setTextColor(150); doc.text('Sem registros no período.', 14, y+3);
     }
     y += 12;
+
+    // bloco de REVISÃO / MANUTENÇÃO (só para máquinas com medidor)
+    // espelha o card da tela: rótulo colorido + "X de Y" + "faltam Z" + barra de progresso
+    if (maquina.possuiHorimetro) {
+      const man = calcularManutencao(maquina);
+      const suf = maquina.unidade === 'km' ? 'km' : 'h';
+      const bh = 30;
+      if (y + bh > H - 12) { doc.addPage(); cabecalho(); y = 34; }
+      const bx = 14, bw = W - 28;
+      // moldura
+      doc.setDrawColor(225); doc.setFillColor(255, 255, 255);
+      doc.roundedRect(bx, y-4, bw, bh, 2, 2, 'FD');
+
+      // cor do status
+      let cor;
+      if (man.percent == null) cor = [110,110,110];
+      else if (man.vencido) cor = [239,68,68];
+      else if (man.rotulo === 'Próxima') cor = [200,140,10];
+      else cor = [22,140,60];
+
+      // título + selo do status
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(27, 58, 92);
+      doc.text('REVISÃO / MANUTENÇÃO', bx+4, y+2);
+      doc.setTextColor(cor[0], cor[1], cor[2]); doc.setFontSize(9);
+      const selo = man.percent == null ? 'SEM DADOS' : (man.rotulo || '').toUpperCase();
+      doc.text(selo, bx+bw-4 - doc.getTextWidth(selo), y+2);
+
+      // medidor atual | última revisão | intervalo
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(90);
+      const atualTxt = maquina.horimetroAtual != null ? `${Math.round(maquina.horimetroAtual)}${suf}` : '—';
+      const ultTxt = maquina.horimetroUltimaManutencao != null ? `${Math.round(maquina.horimetroUltimaManutencao)}${suf}` : '—';
+      doc.text(`Medidor atual: ${atualTxt}   |   Última revisão: ${ultTxt}   |   Intervalo: ${man.intervalo != null ? man.intervalo+suf : '—'}`, bx+4, y+8.5);
+
+      if (man.percent != null) {
+        // linha "X de Y" (esq) e "faltam Z / vencida" (dir)
+        doc.setFontSize(8.5); doc.setTextColor(110);
+        doc.text(`${man.desdeUltima}${suf} de ${man.intervalo}${suf}`, bx+4, y+15);
+        doc.setFont('helvetica', 'bold'); doc.setTextColor(cor[0], cor[1], cor[2]);
+        const dirTxt = man.vencido ? `${Math.abs(man.restante)}${suf} vencida` : `faltam ${man.restante}${suf}`;
+        doc.text(dirTxt, bx+bw-4 - doc.getTextWidth(dirTxt), y+15);
+        // barra de progresso
+        const barX = bx+4, barY = y+18, barW = bw-8, barH = 3.2;
+        doc.setFillColor(238, 241, 244); doc.roundedRect(barX, barY, barW, barH, 1.6, 1.6, 'F');
+        const prW = Math.max(0, Math.min(barW, barW * (man.percent/100)));
+        if (prW > 0) { doc.setFillColor(cor[0], cor[1], cor[2]); doc.roundedRect(barX, barY, prW, barH, 1.6, 1.6, 'F'); }
+      }
+      doc.setTextColor(60);
+      y += bh + 2;
+    }
 
     // tabela de km/horas por dia desta máquina
     y = tabelaTrabalhoPorDiaPdf(doc, R, maquina, y, W, () => { doc.addPage(); cabecalho(); });
