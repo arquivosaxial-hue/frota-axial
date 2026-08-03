@@ -697,7 +697,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v60';
+const APP_VERSION = 'v61';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -4559,6 +4559,63 @@ function App() {
   const [sincronizando, setSincronizando] = useState(false);
 
   function aviso(msg) { setToast(msg); setTimeout(() => setToast(''), 2600); }
+
+  // Voltar "uma tela" — replica o que a seta de voltar faz em cada contexto.
+  // Retorna true se houve navegação interna; false se já está na raiz (pode sair).
+  // A ordem segue a hierarquia da UI: modais → etapas → telas → modo → raiz.
+  function voltarNoApp() {
+    // 1) modais/sobreposições de nível App
+    if (showObras) { setShowObras(false); return true; }
+    if (showChecklist) { setShowChecklist(false); return true; }
+
+    // 2) fluxo do OPERADOR (obra → máquina → data → registro)
+    if (modo === 'operador') {
+      if (opResultado) { reiniciarOperador(); return true; }        // tela de sucesso → recomeça
+      if (opPasso === 'registro') { setOpPasso('data'); return true; }
+      if (opPasso === 'data') { setOpPasso('maquina'); return true; }
+      if (opPasso === 'maquina') { setOpPasso('obra'); return true; }
+      // opPasso === 'obra' (primeira etapa) → volta à tela inicial
+      reiniciarOperador(); setModo('inicial'); return true;
+    }
+
+    // 3) VALIDADOR
+    if (modo === 'validador') {
+      if (valObraRelatorio) { setValObraRelatorio(null); return true; }
+      if (valObra) { setValObra(null); return true; }
+      if (logadoValidador) { setValTela('validar'); }
+      setModo('inicial'); return true;
+    }
+
+    // 4) ADMIN
+    if (modo === 'admin') {
+      if (!logado) { setModo('inicial'); return true; }             // tela de login
+      if (editando) { setEditando(null); setTela('lista'); return true; }
+      if (tela !== 'lista') { setTela('lista'); return true; }      // sub-tela → lista
+      setModo('inicial'); setTela('lista'); return true;            // lista → início
+    }
+
+    // 5) já na tela inicial: não há para onde voltar
+    return false;
+  }
+
+  // Mantém a versão mais recente de voltarNoApp num ref, para o listener
+  // (registrado uma única vez) sempre enxergar o estado atual.
+  const voltarRef = useRef(voltarNoApp);
+  voltarRef.current = voltarNoApp;
+
+  // Intercepta o botão "voltar" do aparelho (popstate) e liga à navegação interna.
+  useEffect(() => {
+    try { window.history.pushState({ app: true }, ''); } catch (e) {}
+    const onPop = () => {
+      const navegou = voltarRef.current();
+      if (navegou) {
+        try { window.history.pushState({ app: true }, ''); } catch (err) {}
+      }
+      // navegou === false → deixa sair do app (comportamento esperado na raiz)
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   // Sincroniza a fila offline e atualiza o contador
   async function tentarSincronizar() {
