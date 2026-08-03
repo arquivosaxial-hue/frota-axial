@@ -697,7 +697,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v61';
+const APP_VERSION = 'v62';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -3362,6 +3362,7 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, onExclu
   const [fObra, setFObra] = useState(obraFixa || 'todas');
   const [fMaquina, setFMaquina] = useState('todas');
   const [fEmpresa, setFEmpresa] = useState('todas');
+  const [mostrarInativas, setMostrarInativas] = useState(false);
   const [editandoDia, setEditandoDia] = useState(null);
 
   const obras = Array.from(new Set(maquinas.map(m => m.obra).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
@@ -3369,6 +3370,7 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, onExclu
   const empresas = Array.from(new Set(maquinas.map(empresaDaMaquina).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
   // máquinas disponíveis no seletor (respeitam obra e empresa escolhidas)
   const maquinasDoFiltro = maquinas.filter(m =>
+    (mostrarInativas || m.ativa) &&
     (fObra === 'todas' || m.obra === fObra) &&
     (fEmpresa === 'todas' || empresaDaMaquina(m) === fEmpresa)
   );
@@ -3377,7 +3379,8 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, onExclu
   const maquinasFiltradas = maquinas.filter(m => {
     if (fObra !== 'todas' && m.obra !== fObra) return false;
     if (fEmpresa !== 'todas' && empresaDaMaquina(m) !== fEmpresa) return false;
-    if (fMaquina !== 'todas' && m.id !== fMaquina) return false;
+    if (fMaquina !== 'todas') return m.id === fMaquina;  // máquina escolhida (mesmo inativa)
+    if (!mostrarInativas && !m.ativa) return false;      // em "todas", esconde inativas salvo se marcado
     return true;
   });
   const idsFiltrados = new Set(maquinasFiltradas.map(m => m.id));
@@ -3439,6 +3442,12 @@ function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, onExclu
             <option value="todas">Todas as máquinas</option>
             {maquinasDoFiltro.map(m => <option key={m.id} value={m.id}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</option>)}
           </select>
+          {maquinas.some(m => !m.ativa) && (
+            <label style={{display:'flex', alignItems:'center', gap:7, fontSize:13.5, color:COR.cinza, fontWeight:600, cursor:'pointer', marginTop:8}}>
+              <input type="checkbox" checked={mostrarInativas} onChange={e => setMostrarInativas(e.target.checked)} style={{width:16, height:16}}/>
+              Mostrar inativas
+            </label>
+          )}
         </div>
         <div style={{display:'flex', gap:10, marginLeft:'auto', flexWrap:'wrap'}}>
           <button onClick={() => gerarPdfCalendarios(maquinasFiltradas, registrosFiltrados, resumo, ini, fim)} disabled={!maquinasFiltradas.length} style={{...S.botaoSec, opacity: maquinasFiltradas.length?1:.5}}>
