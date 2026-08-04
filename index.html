@@ -697,7 +697,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v64';
+const APP_VERSION = 'v65';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -1570,6 +1570,7 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
   const nomesMes = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
   const diasSemana = ['D','S','T','Q','Q','S','S'];
 
+  let primeiraMaquina = true;
   for (const maquina of maquinasLista) {
     // status por dia desta máquina
     const porDia = {};
@@ -1580,17 +1581,14 @@ function gerarPdfCalendarios(maquinasLista, registros, resumo, ini, fim) {
     }
     const stPorDia = {}; for (const dia in porDia) stPorDia[dia] = statusDoDia(porDia[dia]);
 
-    // calcula altura necessária e quebra página se preciso.
-    // Considera cabeçalho + calendário + bloco de revisão + tabela de dias
-    // (aprox. pelo nº de dias funcionais). Antes só reservava o calendário,
-    // então a 2ª máquina começava no rodapé e a tabela de km/horas era cortada.
+    // Cada máquina começa em uma PÁGINA NOVA (exceto a primeira).
+    // Antes, a máquina seguinte começava logo abaixo da anterior e a tabela
+    // de km/horas partia no meio (com o cabeçalho grande entre as linhas),
+    // dando a falsa impressão de que faltavam dias. Uma máquina por página
+    // deixa cada tabela inteira e fácil de conferir.
     const R0 = resumoPorId[maquina.id];
-    const nDias = R0 ? new Set((R0.registros||[]).filter(r=>r.status==='funcional').map(r=>r.dataRef||diaLocal(r.criadoEm))).size : 0;
-    const alturaCalendario = 22 + Math.ceil(meses.length / 3) * 44 + 14;
-    const alturaRevisao = maquina.possuiHorimetro ? 32 : 0;
-    const alturaTabela = maquina.possuiHorimetro ? (18 + nDias * 5.5) : 0;
-    const alturaBloco = alturaCalendario + alturaRevisao + Math.min(alturaTabela, 120);
-    if (y > 40 && y + alturaBloco > H - 12) { doc.addPage(); cabecalho(); y = 34; }
+    if (!primeiraMaquina) { doc.addPage(); cabecalho(); y = 34; }
+    primeiraMaquina = false;
 
     // título da máquina
     // empresa (fornecedor) em destaque no início
