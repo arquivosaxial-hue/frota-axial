@@ -85,18 +85,34 @@
 
     // Registro do Service Worker (habilita uso offline e instalação)
     if ('serviceWorker' in navigator) {
+      let jaRecarregou = false;
+      // quando o SW novo assume o controle, recarrega a página uma vez
+      // para o app passar a rodar o código novo (evita ficar com versão velha em cache)
+      navigator.serviceWorker.addEventListener('controllerchange', function() {
+        if (jaRecarregou) return;
+        jaRecarregou = true;
+        window.location.reload();
+      });
       window.addEventListener('load', function() {
         navigator.serviceWorker.register('sw.js').then(function(reg) {
+          // se já houver um SW esperando, manda ativar agora
+          if (reg.waiting) { reg.waiting.postMessage('SKIP_WAITING'); }
           // Detecta nova versão disponível
           reg.addEventListener('updatefound', function() {
             const novo = reg.installing;
             if (!novo) return;
             novo.addEventListener('statechange', function() {
               if (novo.state === 'installed' && navigator.serviceWorker.controller) {
+                // versão nova pronta: ativa imediatamente (o controllerchange recarrega)
+                novo.postMessage('SKIP_WAITING');
                 window.__novaVersaoDisponivel = true;
                 window.dispatchEvent(new Event('sw-update'));
               }
             });
+          });
+          // verifica atualização a cada vez que o app volta ao foco
+          document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') reg.update();
           });
         }).catch(function(err) { console.warn('SW falhou:', err); });
       });
@@ -697,7 +713,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v65';
+const APP_VERSION = 'v66';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
