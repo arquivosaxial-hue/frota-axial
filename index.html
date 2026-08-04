@@ -2,6 +2,9 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#1B3A5C" />
   <link rel="manifest" href="manifest.json" />
@@ -713,7 +716,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v66';
+const APP_VERSION = 'v67';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -1189,7 +1192,12 @@ function tabelaMotivosPdf(doc, regsMaquina, y, W, addPageCb) {
   y += 6;
   doc.setFont('helvetica', 'normal'); doc.setTextColor(40);
   for (const p of paradas) {
-    if (y > H - 14) { addPageCb && addPageCb(); y = 34; }
+    if (y > H - 14) {
+      addPageCb && addPageCb();
+      y = 34;
+      // reconfigura cor/fonte: o cabeçalho da nova página deixa o texto BRANCO
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(40);
+    }
     const dia = (p.dataRef || diaLocal(p.criadoEm)).split('-').reverse().slice(0,2).join('/');
     const operador = (p.operador && p.operador.trim()) ? p.operador.trim() : '—';
     const motivo = p.motivoParada || '—';
@@ -1253,7 +1261,14 @@ function tabelaTrabalhoPorDiaPdf(doc, R, maquina, y, W, addPageCb) {
 
   let total = 0;
   for (const d of dias) {
-    if (y > H - 14) { addPageCb && addPageCb(); y = 34; }
+    if (y > H - 14) {
+      addPageCb && addPageCb();
+      y = 34;
+      // o cabeçalho da nova página escreve em BRANCO (sobre o fundo azul).
+      // É preciso reconfigurar fonte/cor aqui, senão as linhas seguintes
+      // saem em branco sobre fundo branco (invisíveis no PDF).
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(40);
+    }
     const v = porDia[d] || 0;
     total += v;
     const op = opPorDia[d] ? opPorDia[d].trim() : '—';
