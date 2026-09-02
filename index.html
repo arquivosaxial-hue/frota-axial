@@ -749,7 +749,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v68';
+const APP_VERSION = 'v69';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -3193,6 +3193,9 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
     if (status === 'funcional') {
       if (temHorimetro) {
         if (horimetro === '' || isNaN(Number(horimetro))) { setErro(`Informe o ${maquina.unidade==='km'?'hodômetro':'horímetro'} atual. Se o medidor estiver com defeito, repita a última leitura.`); return; }
+        // Zero não é leitura: quando o medidor está quebrado o operador digitava 0,
+        // e isso zerava o medidor da máquina no cadastro (o RT-04 ficou em 0 assim).
+        if (Number(horimetro) <= 0) { setErro(`${maquina.unidade==='km'?'Hodômetro':'Horímetro'} não pode ser zero. Se o medidor estiver com defeito ou parado, repita a última leitura registrada.`); return; }
         if (!foto && !dataRef && !complemento) { setErro('A foto do painel é obrigatória para validar o horímetro.'); return; }
         // --- Validação inteligente da leitura (evita erro de digitação) ---
         if (!forcar) {
@@ -3218,6 +3221,10 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
     } else if (status === 'sem_atividade') {
       if (temHorimetro && (horimetro === '' || isNaN(Number(horimetro)))) {
         setErro(`Informe o ${maquina.unidade==='km'?'hodômetro':'horímetro'} atual. É obrigatório mesmo sem atividade.`);
+        return;
+      }
+      if (temHorimetro && Number(horimetro) <= 0) {
+        setErro(`${maquina.unidade==='km'?'Hodômetro':'Horímetro'} não pode ser zero. Se o medidor estiver com defeito ou parado, repita a última leitura registrada.`);
         return;
       }
       // validação inteligente também aqui
@@ -5072,7 +5079,10 @@ function App() {
     // 'nao_funcional' não exige leitura, por isso fica de fora.
     const ultimaLeitura = {}; // maquinaId -> { dia, valor, criadoEm, ajuste }
     for (const r of rsAtualizados) {
-      if (r.horimetro == null || !(r.status === 'funcional' || r.status === 'sem_atividade')) continue;
+      // zero não é leitura — é medidor quebrado registrado errado. Se entrar
+      // aqui, vira o "medidor atual" da máquina e zera o cálculo de manutenção.
+      if (r.horimetro == null || Number(r.horimetro) <= 0) continue;
+      if (!(r.status === 'funcional' || r.status === 'sem_atividade')) continue;
       const dia = r.dataRef || diaLocal(r.criadoEm);
       if (!dia) continue;
       const ajuste = r.ajusteAdmin === true;
