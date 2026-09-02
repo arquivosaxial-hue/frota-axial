@@ -604,16 +604,24 @@ async function listarObras() {
 
 // Semeia tabelas vazias na primeira execução
 async function semearSeVazio() {
-  if (!supabaseClient) return;
+  if (!supabaseClient || !navigator.onLine) return;
   try {
-    const obras = await listarObras();
-    if (obras.length === 0) {
+    // Conta direto no banco em vez de usar listarObras/listarMaquinas: essas
+    // funções devolvem [] quando a consulta dá timeout, e o "vazio por falha"
+    // era lido como "banco novo" — foi assim que 4 obras-semente duplicadas
+    // apareceram em 10/08/2026. count() com erro aborta em vez de semear.
+    const { count: nObras, error: e1 } =
+      await supabaseClient.from('obras').select('id', { count: 'exact', head: true });
+    if (e1) throw e1;
+    if (nObras === 0) {
       await supabaseClient.from('obras').insert(
         OBRAS_SEMENTE.map(nome => ({ nome, ativa: true }))
       );
     }
-    const maqs = await listarMaquinas();
-    if (maqs.length === 0) {
+    const { count: nMaqs, error: e2 } =
+      await supabaseClient.from('maquinas').select('id', { count: 'exact', head: true });
+    if (e2) throw e2;
+    if (nMaqs === 0) {
       await supabaseClient.from('maquinas').insert(
         MAQUINAS_SEMENTE.map(m => maquinaParaBanco({
           ...m,
@@ -632,6 +640,14 @@ async function semearSeVazio() {
 function calcularManutencao(m) {
   if (!m.possuiHorimetro) {
     return { cor: COR.cinza, rotulo: 'N/A', restante: null, vencido: false, percent: null, desdeUltima: null, intervalo: null };
+  }
+  // Sem marco de revisão não dá para calcular nada: antes o app assumia zero
+  // e toda máquina virava "Vencida" com número absurdo (ex.: 245.658 km de
+  // atraso num caminhão que nunca teve revisão lançada). Agora fica cinza,
+  // sinalizando que falta o dado — não que a máquina está atrasada.
+  if (!m.temRevisao && !(m.horimetroUltimaManutencao > 0)) {
+    return { cor: COR.cinza, rotulo: 'Sem revisão', restante: null, vencido: false,
+             percent: null, desdeUltima: null, intervalo: m.intervaloManutencao || 500, semBase: true };
   }
   const desdeUltima = Math.max(0, m.horimetroAtual - (m.horimetroUltimaManutencao || 0));
   const intervalo = m.intervaloManutencao || 500;
@@ -682,6 +698,23 @@ function empresaDaMaquina(m) {
   return 'Axial';
 }
 
+// Detecta o erro de digitação mais comum: o operador põe a vírgula no lugar
+// errado e 8819 vira 881,9 (ou o contrário). Só devolve sugestão quando ela é
+// PLAUSÍVEL — o valor corrigido precisa ficar igual ou acima da última leitura
+// e dentro do que a máquina consegue avançar em poucos dias. Se não fecha,
+// devolve null e o operador confere na mão.
+function sugerirCorrecaoLeitura(novo, ultima, unidade) {
+  if (!(novo > 0) || !(ultima > 0)) return null;
+  const maxAvanco = (unidade === 'km') ? 4500 : 72;   // ~3 dias de folga
+  const arred = (v) => Math.round(v * 10) / 10;
+  const fatores = novo < ultima ? [10, 100] : [0.1, 0.01];
+  for (const f of fatores) {
+    const c = arred(novo * f);
+    if (c >= ultima && c - ultima <= maxAvanco) return c;
+  }
+  return null;
+}
+
 // ------------------------------------------------------------
 // REGISTROS DO OPERADOR
 // ------------------------------------------------------------
@@ -716,7 +749,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v67';
+const APP_VERSION = 'v68';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -959,22 +992,48 @@ async function limparFotosPeriodo(registros, ini, fim, obra, maquinaId, empresa,
     for (const u of (r.fotosExtras || [])) { const c = caminhoDaFotoUrl(u); if (c) caminhos.push(c); }
   }
   // remove os arquivos do bucket (em lotes de 100)
+  // ATENÇÃO: se a remoção falhar (é o caso quando o bucket não tem policy
+  // de DELETE para anon), NÃO se pode limpar a URL do registro — senão o
+  // arquivo fica no Storage sem ninguém apontando para ele, ocupando espaço
+  // para sempre. Foi assim que ~1.500 fotos viraram lixo irrecuperável.
   let fotosRemovidas = 0;
+  const removidos = new Set();
+  let falhaRemocao = null;
   for (let i = 0; i < caminhos.length; i += 100) {
     const lote = caminhos.slice(i, i + 100);
-    try { await supabaseClient.storage.from('fotos').remove(lote); fotosRemovidas += lote.length; }
-    catch (e) { console.error('remover fotos', e); }
+    try {
+      const { error } = await supabaseClient.storage.from('fotos').remove(lote);
+      if (error) throw error;
+      lote.forEach(c => removidos.add(c));
+      fotosRemovidas += lote.length;
+    } catch (e) { console.error('remover fotos', e); falhaRemocao = e; }
+  }
+  if (falhaRemocao && fotosRemovidas === 0) {
+    throw new Error(
+      'Não foi possível apagar as fotos do armazenamento, então nada foi alterado ' +
+      '(apagar só a referência deixaria os arquivos ocupando espaço para sempre).\n\n' +
+      'Detalhe: ' + (falhaRemocao.message || falhaRemocao));
   }
 
-  // limpa os campos de foto no registro, um a um (para reportar progresso)
+  // limpa os campos de foto no registro, um a um (para reportar progresso).
+  // Só limpa o que foi REALMENTE apagado do Storage: se o arquivo continua lá,
+  // a URL tem que continuar apontando para ele.
   let feitos = 0;
   for (const r of alvo) {
+    const cPainel = caminhoDaFotoUrl(r.fotoUrl);
+    const extrasRestantes = (r.fotosExtras || []).filter(u => {
+      const c = caminhoDaFotoUrl(u);
+      return c && !removidos.has(c);
+    });
+    const painelSaiu = cPainel && removidos.has(cPainel);
+    // nada deste registro foi apagado do disco: não mexe nele
+    if (!painelSaiu && extrasRestantes.length === (r.fotosExtras || []).length) continue;
+    const patch = { fotos_extras: extrasRestantes, fotos_limpas_em: new Date().toISOString(), fotos_limpas_por: quem || 'Administrador' };
+    if (painelSaiu) patch.foto_url = '';
     try {
-      await supabaseClient.from('registros')
-        .update({ foto_url: '', fotos_extras: [], fotos_limpas_em: new Date().toISOString(), fotos_limpas_por: quem || 'Administrador' })
-        .eq('id', r.id);
+      await supabaseClient.from('registros').update(patch).eq('id', r.id);
+      feitos++;
     } catch (e) { console.error('limpar fotos registro', e); }
-    feitos++;
     if (onProgresso) onProgresso(feitos, total);
   }
   return { registrosLimpos: feitos, fotosRemovidas };
@@ -985,6 +1044,16 @@ function maquinasParaRevisao(maquinas) {
     .map(m => ({ m, mn: calcularManutencao(m) }))
     .filter(x => x.mn.rotulo === 'Próxima' || x.mn.rotulo === 'Vencida')
     .sort((a, b) => (a.mn.restante ?? 0) - (b.mn.restante ?? 0));
+}
+
+// Máquinas ativas que ainda não têm marco de revisão lançado.
+// Enquanto estiverem aqui, o semáforo delas fica cinza (não vermelho).
+function maquinasSemRevisao(maquinas) {
+  return maquinas
+    .filter(m => m.ativa && m.possuiHorimetro)
+    .map(m => ({ m, mn: calcularManutencao(m) }))
+    .filter(x => x.mn.semBase)
+    .sort((a, b) => (a.m.codigo || '').localeCompare(b.m.codigo || '', 'pt-BR'));
 }
 
 // Formata minutos como "Xh Ymin"
@@ -1083,6 +1152,112 @@ function gerarPdfPreventiva(m) {
 
   const nomeArq = (m.codigo || m.descricao || 'maquina').replace(/[^\w-]+/g,'_');
   doc.save(`preventiva_${nomeArq}.pdf`);
+}
+
+// ------------------------------------------------------------
+// PDF: relação de máquinas, agrupada por contrato (obra).
+// Respeita exatamente os filtros da tela — o que está na lista sai no PDF.
+// ------------------------------------------------------------
+function gerarPdfListaMaquinas(lista, filtros) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'landscape' });
+  const W = 297, H = 210;
+  const X0 = 12;
+
+  // largura de cada coluna, em mm (soma = 262)
+  const COLS = [
+    { rot: 'CÓDIGO',      w: 24, get: m => m.codigo || '—' },
+    { rot: 'DESCRIÇÃO',   w: 52, get: m => m.descricao || '—' },
+    { rot: 'EMPRESA',     w: 36, get: m => empresaDaMaquina(m) },
+    { rot: 'FABRICANTE',  w: 24, get: m => m.fabricante || '—' },
+    { rot: 'MODELO',      w: 22, get: m => m.modelo || '—' },
+    { rot: 'Nº SÉRIE',    w: 32, get: m => m.numeroSerie || '—' },
+    { rot: 'MEDIDOR',     w: 24, get: m => m.possuiHorimetro
+        ? `${Math.round(m.horimetroAtual || 0)} ${unidadeSufixo(m)}` : 'sem medidor' },
+    { rot: 'SITUAÇÃO',    w: 22, get: m => m.ativa ? 'Ativa' : 'Inativa' },
+    { rot: 'MANUTENÇÃO',  w: 26, get: m => calcularManutencao(m).rotulo },
+  ];
+
+  let y = 0;
+  function cabecalho(primeira) {
+    doc.setFillColor(27, 58, 92); doc.rect(0, 0, W, 26, 'F');
+    doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+    doc.text('Relação de Máquinas', 14, 12);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    doc.text('Construtora Axial — Gestão de Frota', 14, 19);
+    desenharLogoPdf(doc, W);
+    y = 34;
+    if (primeira && filtros && filtros.length) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(110);
+      doc.text('Filtros aplicados: ' + filtros.join('  ·  '), X0, y);
+      y += 7;
+    }
+  }
+  function cabecalhoTabela() {
+    doc.setFillColor(233, 238, 245); doc.rect(X0, y - 4.5, W - X0 * 2, 7, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(60);
+    let x = X0 + 2;
+    COLS.forEach(c => { doc.text(c.rot, x, y); x += c.w; });
+    y += 5.5;
+  }
+  function quebrarSePreciso(altura) {
+    if (y + altura > H - 14) { doc.addPage(); cabecalho(false); cabecalhoTabela(); return true; }
+    return false;
+  }
+
+  cabecalho(true);
+
+  // agrupa por obra (o "contrato"), em ordem alfabética
+  const grupos = {};
+  lista.forEach(m => { const k = m.obra || 'Sem obra'; (grupos[k] = grupos[k] || []).push(m); });
+  const nomesObra = Object.keys(grupos).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+  cabecalhoTabela();
+
+  nomesObra.forEach(obra => {
+    const maqs = grupos[obra].sort((a, b) =>
+      (a.codigo || a.descricao || '').localeCompare(b.codigo || b.descricao || '', 'pt-BR'));
+
+    quebrarSePreciso(16);
+    // faixa do contrato
+    doc.setFillColor(27, 58, 92); doc.rect(X0, y - 4, W - X0 * 2, 7, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255);
+    doc.text(obra.toUpperCase(), X0 + 2, y + 0.8);
+    doc.text(`${maqs.length} máquina${maqs.length > 1 ? 's' : ''}`, W - X0 - 2, y + 0.8, { align: 'right' });
+    y += 9;
+
+    maqs.forEach((m, idx) => {
+      // altura da linha = maior número de linhas quebradas entre as colunas
+      const celulas = COLS.map(c => doc.splitTextToSize(String(c.get(m)), c.w - 3));
+      const nLinhas = Math.max(...celulas.map(t => t.length));
+      const alturaLinha = nLinhas * 3.6 + 2.4;
+
+      if (quebrarSePreciso(alturaLinha)) { /* cabeçalho já redesenhado */ }
+      if (idx % 2 === 0) {
+        doc.setFillColor(247, 249, 251);
+        doc.rect(X0, y - 3.6, W - X0 * 2, alturaLinha, 'F');
+      }
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(30);
+      let x = X0 + 2;
+      celulas.forEach((texto, i) => { doc.text(texto, x, y); x += COLS[i].w; });
+      y += alturaLinha;
+    });
+    y += 4;
+  });
+
+  // rodapé com totais em todas as páginas
+  const totalPag = doc.internal.getNumberOfPages();
+  const nAtivas = lista.filter(m => m.ativa).length;
+  const nAxial = lista.filter(m => m.tipo !== 'prestador').length;
+  for (let p = 1; p <= totalPag; p++) {
+    doc.setPage(p);
+    doc.setFontSize(8); doc.setTextColor(150); doc.setFont('helvetica', 'normal');
+    doc.text(`${lista.length} máquinas · ${nAtivas} ativas · ${nAxial} Axial · ${lista.length - nAxial} de prestadores`, X0, H - 7);
+    doc.text(`Emitido em ${new Date().toLocaleString('pt-BR')}`, W / 2, H - 7, { align: 'center' });
+    doc.text(`Página ${p} de ${totalPag}`, W - X0, H - 7, { align: 'right' });
+  }
+
+  doc.save(`maquinas_${diaLocal(new Date())}.pdf`);
 }
 
 function gerarPdfFichaMaquina(m) {
@@ -2562,6 +2737,18 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
   const totAtivas = maquinas.filter(m => m.ativa).length;
   const totInativas = maquinas.length - totAtivas;
 
+  // descrição dos filtros ativos — vai impressa no cabeçalho do PDF, para
+  // quem receber o documento saber o recorte que está olhando
+  const rotulosFiltro = [];
+  if (fObra !== 'todas') rotulosFiltro.push(`Obra: ${fObra}`);
+  if (fTipo !== 'todos') rotulosFiltro.push(`Tipo: ${fTipo === 'axial' ? 'Axial (própria)' : 'Prestador'}`);
+  if (fMaquina !== 'todas') {
+    const m = maquinas.find(x => x.id === fMaquina);
+    if (m) rotulosFiltro.push(`Máquina: ${m.codigo ? m.codigo + ' · ' : ''}${m.descricao}`);
+  }
+  if (busca.trim()) rotulosFiltro.push(`Busca: "${busca.trim()}"`);
+  rotulosFiltro.push(mostrarInativas ? 'Ativas e inativas' : 'Somente ativas');
+
   return (
     <div style={{maxWidth:760, margin:'0 auto'}}>
       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom:6, flexWrap:'wrap'}}>
@@ -2569,7 +2756,7 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
           <h2 style={{margin:0, fontSize:24, fontWeight:800, color:COR.azul}}>Máquinas</h2>
           <p style={{margin:'4px 0 0', color:COR.cinza, fontSize:14}}>{totAtivas} ativas{totInativas ? ` · ${totInativas} inativas` : ''}</p>
         </div>
-        <div style={{display:'flex', gap:8}}>
+        <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
           <button onClick={onAbrirObras} style={S.botaoSec}><Building size={18}/> Obras</button>
           <button onClick={onNova} style={S.botaoPrim}><Plus size={18}/> Nova máquina</button>
         </div>
@@ -2605,6 +2792,15 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
               Mostrar inativas
             </label>
           )}
+        </div>
+        <div style={{display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', paddingTop:2}}>
+          <button
+            onClick={() => gerarPdfListaMaquinas(filtradas, rotulosFiltro)}
+            disabled={filtradas.length === 0}
+            style={{...S.botaoSec, opacity: filtradas.length ? 1 : .5}}>
+            <FileText size={17}/> Exportar {filtradas.length} máquina{filtradas.length === 1 ? '' : 's'} em PDF
+          </button>
+          <span style={{fontSize:12.5, color:COR.cinza}}>agrupadas por obra</span>
         </div>
       </div>
 
@@ -2952,6 +3148,7 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
   const [fotoPreview, setFotoPreview] = useState('');
   const [erro, setErro] = useState('');
   const [avisoLeitura, setAvisoLeitura] = useState('');
+  const [sugestaoLeitura, setSugestaoLeitura] = useState(null);
   const [avisoFotos, setAvisoFotos] = useState('');
   // checklist: { [item]: { status:'ok'|'nok'|null, obs:'' } }
   const [check, setCheck] = useState({});
@@ -2972,8 +3169,11 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
   async function addExtras(e) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
+    // Fotos extras são contexto da máquina, não evidência de leitura: podem ir
+    // menores. A foto do painel continua em 1280/0.7 porque é dela que se lê o
+    // horímetro. Extras são ~60% do volume do Storage — é onde o ganho está.
     const comps = [];
-    for (const f of files) { const c = await comprimirImagem(f); comps.push({ file: c, preview: URL.createObjectURL(c) }); }
+    for (const f of files) { const c = await comprimirImagem(f, 900, 0.55); comps.push({ file: c, preview: URL.createObjectURL(c) }); }
     setExtras(prev => [...prev, ...comps]);
     setAvisoFotos('');
     e.target.value = '';
@@ -3001,10 +3201,12 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
           const suf = unidadeSufixo(maquina);
           if (ultima != null && ultima > 0) {
             if (novo < ultima) {
+              setSugestaoLeitura(sugerirCorrecaoLeitura(novo, ultima, maquina.unidade));
               setAvisoLeitura(`A leitura informada (${novo}${suf}) é MENOR que a última registrada (${Math.round(ultima)}${suf}). O medidor não costuma diminuir. Confira se digitou certo.`);
               return;
             }
             if (novo - ultima > 1000) {
+              setSugestaoLeitura(sugerirCorrecaoLeitura(novo, ultima, maquina.unidade));
               setAvisoLeitura(`A diferença para a última leitura é de ${Math.round(novo - ultima)}${suf} (acima de 1000${suf}). Isso é incomum. Confira se digitou certo.`);
               return;
             }
@@ -3024,8 +3226,8 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
         const ultima = (maquina.horimetroAtual != null) ? Number(maquina.horimetroAtual) : null;
         const suf = unidadeSufixo(maquina);
         if (ultima != null && ultima > 0) {
-          if (novo < ultima) { setAvisoLeitura(`A leitura informada (${novo}${suf}) é MENOR que a última registrada (${Math.round(ultima)}${suf}). O medidor não costuma diminuir. Confira se digitou certo.`); return; }
-          if (novo - ultima > 1000) { setAvisoLeitura(`A diferença para a última leitura é de ${Math.round(novo - ultima)}${suf} (acima de 1000${suf}). Isso é incomum. Confira se digitou certo.`); return; }
+          if (novo < ultima) { setSugestaoLeitura(sugerirCorrecaoLeitura(novo, ultima, maquina.unidade)); setAvisoLeitura(`A leitura informada (${novo}${suf}) é MENOR que a última registrada (${Math.round(ultima)}${suf}). O medidor não costuma diminuir. Confira se digitou certo.`); return; }
+          if (novo - ultima > 1000) { setSugestaoLeitura(sugerirCorrecaoLeitura(novo, ultima, maquina.unidade)); setAvisoLeitura(`A diferença para a última leitura é de ${Math.round(novo - ultima)}${suf} (acima de 1000${suf}). Isso é incomum. Confira se digitou certo.`); return; }
         }
       }
     }
@@ -3140,7 +3342,7 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
                 <label style={S.rotulo}>{unidadeMedidor(maquina)} atual</label>
                 <div style={{position:'relative'}}>
                   <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
-                  <input type="number" inputMode="numeric" value={horimetro} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); }}/>
+                  <input type="number" inputMode="numeric" value={horimetro} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); setSugestaoLeitura(null); }}/>
                   <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{unidadeSufixo(maquina)}</span>
                 </div>
                 <p style={{fontSize:12, color:COR.cinza, margin:'7px 2px 0'}}>Obrigatório: confirme a leitura atual do medidor, mesmo sem ter rodado.</p>
@@ -3157,7 +3359,7 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
                 <label style={S.rotulo}>{unidadeMedidor(maquina)} atual</label>
                 <div style={{position:'relative'}}>
                   <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
-                  <input type="number" inputMode="numeric" value={horimetro} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); }}/>
+                  <input type="number" inputMode="numeric" value={horimetro} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); setSugestaoLeitura(null); }}/>
                   <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{unidadeSufixo(maquina)}</span>
                 </div>
                 <p style={{fontSize:12, color:COR.cinza, margin:'7px 2px 0'}}>Obrigatório. Se o medidor estiver com defeito, repita a última leitura — assim saberemos que precisa de conserto.</p>
@@ -3276,8 +3478,20 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
               <AlertTriangle size={20} color={COR.amarelo} style={{flexShrink:0, marginTop:1}}/>
               <div style={{fontSize:14, color:'#92400E', fontWeight:600, lineHeight:1.45}}>{avisoLeitura}</div>
             </div>
+            {sugestaoLeitura != null && (
+              <div style={{marginBottom:12, padding:'11px 13px', background:'#FFF', border:`1.5px solid ${COR.verde}`, borderRadius:10}}>
+                <div style={{fontSize:13.5, color:COR.texto, marginBottom:9, lineHeight:1.45}}>
+                  Parece vírgula no lugar errado. Você quis dizer <b>{sugestaoLeitura}{unidadeSufixo(maquina)}</b>?
+                </div>
+                <button
+                  onClick={() => { setHorimetro(String(sugestaoLeitura)); setSugestaoLeitura(null); setAvisoLeitura(''); }}
+                  style={{...S.botaoPrim, width:'100%', background:COR.verde}}>
+                  <CheckCircle2 size={17}/> Sim, usar {sugestaoLeitura}{unidadeSufixo(maquina)}
+                </button>
+              </div>
+            )}
             <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
-              <button onClick={() => setAvisoLeitura('')} style={{...S.botaoPrim, flex:1, minWidth:140}}>
+              <button onClick={() => { setAvisoLeitura(''); setSugestaoLeitura(null); }} style={{...S.botaoPrim, flex:1, minWidth:140}}>
                 <Edit size={17}/> Corrigir leitura
               </button>
               <button onClick={() => validarEConfirmar(true)} disabled={salvando} style={{...S.botaoSec, flex:1, minWidth:140}}>
@@ -3917,6 +4131,7 @@ function CardRevisao({ maquinas, compacto }) {
 // Tela dedicada de revisões pendentes (aba própria no admin)
 function TelaRevisoesPendentes({ maquinas, revisoes, onVoltar, onRegistrarRevisao }) {
   const lista = maquinasParaRevisao(maquinas);
+  const semBase = maquinasSemRevisao(maquinas);
   const [revisarMaq, setRevisarMaq] = useState(null);
   const [historicoMaq, setHistoricoMaq] = useState(null);
   return (
@@ -3929,7 +4144,38 @@ function TelaRevisoesPendentes({ maquinas, revisoes, onVoltar, onRegistrarRevisa
         </div>
       </div>
 
-      {lista.length === 0 ? (
+      {semBase.length > 0 && (
+        <div style={{...S.card, padding:0, overflow:'hidden', marginBottom:16}}>
+          <div style={{padding:'13px 16px', borderBottom:`1px solid ${COR.borda}`, background:'#F3F4F6'}}>
+            <div style={{display:'flex', alignItems:'center', gap:9}}>
+              <Wrench size={18} color={COR.cinza}/>
+              <span style={{fontSize:15, fontWeight:800, color:COR.texto}}>Sem revisão registrada</span>
+              <span style={{marginLeft:'auto', fontSize:12.5, fontWeight:700, color:COR.texto, background:'#E5E7EB', padding:'2px 9px', borderRadius:999}}>{semBase.length}</span>
+            </div>
+            <p style={{margin:'7px 0 0', fontSize:12.5, color:COR.cinza, lineHeight:1.5}}>
+              Estas máquinas não têm marco de última revisão, então o alerta de manutenção
+              não consegue ser calculado. Lance a revisão de cada uma para o semáforo passar a funcionar.
+            </p>
+          </div>
+          <div style={{display:'flex', flexDirection:'column'}}>
+            {semBase.map(({ m }) => (
+              <div key={m.id} style={{display:'flex', alignItems:'center', gap:10, padding:'11px 16px', borderBottom:`1px solid ${COR.bg}`, flexWrap:'wrap'}}>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontSize:14.5, fontWeight:700, color:COR.texto}}>{m.codigo ? m.codigo+' · ' : ''}{m.descricao}</div>
+                  <div style={{fontSize:12, color:COR.cinza, marginTop:1}}>
+                    {m.obra || 'Sem obra'} · leitura atual {Math.round(m.horimetroAtual)}{unidadeSufixo(m)}
+                  </div>
+                </div>
+                <button onClick={() => setRevisarMaq(m)} style={{...S.botaoSec, padding:'7px 13px', fontSize:13}}>
+                  <Wrench size={14}/> Lançar revisão
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {lista.length === 0 && semBase.length === 0 ? (
         <div style={{...S.card, display:'flex', alignItems:'center', gap:10}}>
           <CheckCircle2 size={20} color={COR.verde}/>
           <span style={{fontSize:14, color:COR.texto, fontWeight:600}}>Nenhuma máquina pendente de revisão no momento.</span>
@@ -4844,10 +5090,14 @@ function App() {
       }
       if (venceu) ultimaLeitura[r.maquinaId] = { dia, valor: Number(r.horimetro), criadoEm: r.criadoEm, ajuste };
     }
+    // Máquinas que já têm ao menos uma revisão lançada. Sem isso, não dá
+    // para diferenciar "revisão feita no horímetro 0" de "nunca revisada".
+    const comRevisao = new Set(rv.map(r => r.maquinaId));
     const msHidratadas = ms.map(m => {
+      const temRevisao = comRevisao.has(m.id);
       const u = ultimaLeitura[m.id];
-      if (!u || !isFinite(u.valor)) return m;
-      return { ...m, horimetroAtual: u.valor };
+      if (!u || !isFinite(u.valor)) return { ...m, temRevisao };
+      return { ...m, temRevisao, horimetroAtual: u.valor };
     });
 
     setMaquinas(msHidratadas); setObras(os); setRegistros(rsAtualizados); setChecklistItens(ci); setRevisoes(rv); setCarregando(false);
@@ -5189,10 +5439,16 @@ function App() {
     if (!supabaseClient) return;
     const emUso = maquinas.filter(m => m.obra === o.nome).length;
     const msg = emUso
-      ? `A obra "${o.nome}" está vinculada a ${emUso} máquina(s). Excluir mesmo assim? As máquinas ficarão sem obra.`
-      : `Excluir a obra "${o.nome}"?`;
+      ? `A obra "${o.nome}" está vinculada a ${emUso} máquina(s). Inativar mesmo assim? Ela deixa de aparecer nas listas, mas o histórico continua.`
+      : `Inativar a obra "${o.nome}"? Ela deixa de aparecer nas listas, mas pode ser reativada depois.`;
     if (!window.confirm(msg)) return;
-    await supabaseClient.from('obras').delete().eq('id', o.id);
+    // Inativa em vez de apagar: obra apagada quebra o histórico dos registros
+    // (que guardam o nome da obra) e não tem volta.
+    await supabaseClient.from('obras').update({ ativa: false }).eq('id', o.id);
+    await registrarMovimentacao({
+      responsavel: responsavel || 'Administrador', perfil: 'admin',
+      acao: 'Inativou obra', valorAntigo: o.nome, valorNovo: '(inativa)',
+    });
     recarregar();
   }
 
