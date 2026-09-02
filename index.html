@@ -749,7 +749,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v69';
+const APP_VERSION = 'v70';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -2711,24 +2711,35 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
   const [busca, setBusca] = useState('');
   const [fTipo, setFTipo] = useState('todos');
   const [fObra, setFObra] = useState('todas');
+  const [fEmpresa, setFEmpresa] = useState('todas');
   const [fMaquina, setFMaquina] = useState('todas');
   const [mostrarInativas, setMostrarInativas] = useState(false);
   const [revisarMaq, setRevisarMaq] = useState(null);   // máquina p/ registrar revisão
   const [historicoMaq, setHistoricoMaq] = useState(null); // máquina p/ ver histórico
 
-  // máquinas disponíveis no seletor (respeitam tipo/obra e ativas/inativas)
+  // Empresas responsáveis: "Axial" para as próprias, a locadora para as locadas.
+  // É por aqui que se tira a relação de máquinas de cada contrato de locação.
+  const empresas = Array.from(new Set(
+    maquinas.filter(m => mostrarInativas || m.ativa).map(empresaDaMaquina).filter(Boolean)
+  )).sort((a,b) => a.localeCompare(b,'pt-BR'));
+
+  // máquinas disponíveis no seletor (respeitam tipo/obra/empresa e ativas/inativas)
   const maquinasDoSeletor = maquinas
-    .filter(m => (mostrarInativas || m.ativa) && (fTipo === 'todos' || m.tipo === fTipo) && (fObra === 'todas' || m.obra === fObra))
+    .filter(m => (mostrarInativas || m.ativa)
+              && (fTipo === 'todos' || m.tipo === fTipo)
+              && (fObra === 'todas' || m.obra === fObra)
+              && (fEmpresa === 'todas' || empresaDaMaquina(m) === fEmpresa))
     .sort((a,b) => (a.codigo||a.descricao).localeCompare(b.codigo||b.descricao, 'pt-BR'));
 
   const filtradas = maquinas.filter(m => {
     if (!mostrarInativas && !m.ativa) return false;
     if (fTipo !== 'todos' && m.tipo !== fTipo) return false;
     if (fObra !== 'todas' && m.obra !== fObra) return false;
+    if (fEmpresa !== 'todas' && empresaDaMaquina(m) !== fEmpresa) return false;
     if (fMaquina !== 'todas' && m.id !== fMaquina) return false;
     if (busca.trim()) {
       const q = busca.toLowerCase();
-      const alvo = `${m.codigo} ${m.descricao} ${m.fabricante} ${m.modelo} ${m.numeroSerie} ${m.obra}`.toLowerCase();
+      const alvo = `${m.codigo} ${m.descricao} ${m.fabricante} ${m.modelo} ${m.numeroSerie} ${m.obra} ${m.empresaLocadora || ''}`.toLowerCase();
       if (!alvo.includes(q)) return false;
     }
     return true;
@@ -2741,6 +2752,7 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
   // quem receber o documento saber o recorte que está olhando
   const rotulosFiltro = [];
   if (fObra !== 'todas') rotulosFiltro.push(`Obra: ${fObra}`);
+  if (fEmpresa !== 'todas') rotulosFiltro.push(`Empresa: ${fEmpresa}`);
   if (fTipo !== 'todos') rotulosFiltro.push(`Tipo: ${fTipo === 'axial' ? 'Axial (própria)' : 'Prestador'}`);
   if (fMaquina !== 'todas') {
     const m = maquinas.find(x => x.id === fMaquina);
@@ -2781,6 +2793,10 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
           <select value={fObra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFObra(e.target.value); setFMaquina('todas'); }}>
             <option value="todas">Todas as obras</option>
             {obras.map(o => <option key={o.id} value={o.nome}>{o.nome}</option>)}
+          </select>
+          <select value={fEmpresa} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => { setFEmpresa(e.target.value); setFMaquina('todas'); }}>
+            <option value="todas">Todas as empresas</option>
+            {empresas.map(e => <option key={e} value={e}>{e}</option>)}
           </select>
           <select value={fMaquina} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setFMaquina(e.target.value)}>
             <option value="todas">Todas as máquinas</option>
