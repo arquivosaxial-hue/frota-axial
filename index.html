@@ -756,7 +756,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v73';
+const APP_VERSION = 'v74';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -3947,13 +3947,15 @@ function gerarPdfProblemas(res, obra, ini, fim) {
   doc.save(`problemas_${(obra === 'todas' ? 'frota' : obra).replace(/[^\w-]+/g, '_')}_${ini}_a_${fim}.pdf`);
 }
 
-function TelaProblemas({ registros, maquinas, obras, onVoltar }) {
+// obraFixa: usado pelo validador, que já entrou pela obra dele — ali o seletor
+// de obra some, porque trocar de obra não faz sentido naquele fluxo.
+function TelaProblemas({ registros, maquinas, obras, onVoltar, obraFixa }) {
   // começa na semana passada fechada (segunda a domingo)
   const hoje = diaLocal(new Date());
   const [semana, setSemana] = useState(segundaDaSemana(hoje));
   // IGUÁ é o caso que motivou a tela; se existir, vem selecionada
-  const nomesObra = obras.map(o => o.nome);
-  const [obra, setObra] = useState(nomesObra.find(n => /IGU/i.test(n)) || 'todas');
+  const nomesObra = (obras || []).map(o => o.nome);
+  const [obra, setObra] = useState(obraFixa || nomesObra.find(n => /IGU/i.test(n)) || 'todas');
 
   const ini = semana, fim = somarDias(semana, 6);
   const res = resumoProblemas(registros, maquinas, obra, ini, fim);
@@ -3966,12 +3968,14 @@ function TelaProblemas({ registros, maquinas, obras, onVoltar }) {
         <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
         <div>
           <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Problemas da semana</h2>
-          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>O que os operadores apontaram no checklist</p>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>
+            {obraFixa ? obraFixa : 'O que os operadores apontaram no checklist'}
+          </p>
         </div>
       </div>
 
       <div style={{...S.cardFiltro, marginBottom:18, display:'flex', flexDirection:'column', gap:10}}>
-        <CabecalhoFiltros texto="Período e obra" />
+        <CabecalhoFiltros texto={obraFixa ? 'Período' : 'Período e obra'} />
         <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
           <button onClick={() => setSemana(somarDias(semana, -7))} style={estiloSem}>‹ Semana anterior</button>
           <div style={{fontSize:14.5, fontWeight:700, color:COR.texto, padding:'0 6px'}}>
@@ -3982,10 +3986,12 @@ function TelaProblemas({ registros, maquinas, obras, onVoltar }) {
           <button onClick={() => setSemana(segundaDaSemana(hoje))} style={{...estiloSem, marginLeft:'auto'}}>Semana atual</button>
         </div>
         <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
-          <select value={obra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setObra(e.target.value)}>
-            <option value="todas">Todas as obras</option>
-            {obras.map(o => <option key={o.id} value={o.nome}>{o.nome}</option>)}
-          </select>
+          {!obraFixa && (
+            <select value={obra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setObra(e.target.value)}>
+              <option value="todas">Todas as obras</option>
+              {(obras || []).map(o => <option key={o.id} value={o.nome}>{o.nome}</option>)}
+            </select>
+          )}
           <button onClick={() => gerarPdfProblemas(res, obra, ini, fim)}
                   disabled={res.totais.itensNok === 0 && res.totais.diasParado === 0}
                   style={{...S.botaoSec, opacity:(res.totais.itensNok || res.totais.diasParado) ? 1 : .5}}>
@@ -5096,7 +5102,7 @@ function LoginValidador({ onEntrar, onVoltar }) {
 }
 
 // Validador: escolher a obra
-function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onAbrirRelatorio, onVoltar }) {
+function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onAbrirRelatorio, onAbrirProblemas, onVoltar }) {
   // conta registros pendentes de validação por obra
   const pendentesPorObra = {};
   for (const r of registros) {
@@ -5115,6 +5121,20 @@ function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onAbrirRelato
     if (diasPendentesMaquina(m, registros).length > 0) atrasoPorObra[nome] = (atrasoPorObra[nome] || 0) + 1;
   }
   const obras = Array.from(new Set(maquinas.filter(m=>m.ativa).map(m => m.obra || 'Sem obra'))).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+
+  // itens do checklist marcados "Não OK" na semana corrente, por obra —
+  // serve para o validador saber onde olhar antes mesmo de entrar na obra
+  const iniSemana = segundaDaSemana(hoje), fimSemana = somarDias(iniSemana, 6);
+  const problemasPorObra = {};
+  for (const r of registros) {
+    const dia = r.dataRef || diaLocal(r.criadoEm);
+    if (!dia || dia < iniSemana || dia > fimSemana) continue;
+    const n = (r.checklist || []).filter(c => c && c.status === 'nok').length
+            + (r.status === 'nao_funcional' ? 1 : 0);
+    if (!n) continue;
+    const nome = r.obra || 'Sem obra';
+    problemasPorObra[nome] = (problemasPorObra[nome] || 0) + n;
+  }
 
   function Pilula({ n, texto, fg, bg }) {
     return (
@@ -5138,7 +5158,8 @@ function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onAbrirRelato
           const pend = pendentesPorObra[nome] || 0;
           const semCheck = semCheckPorObra[nome] || 0;
           const atraso = atrasoPorObra[nome] || 0;
-          const temAlgo = pend > 0 || semCheck > 0 || atraso > 0;
+          const probl = problemasPorObra[nome] || 0;
+          const temAlgo = pend > 0 || semCheck > 0 || atraso > 0 || probl > 0;
           return (
             <div key={nome} style={{background:'#fff', border:`1.5px solid ${temAlgo ? '#FDE68A' : COR.borda}`, borderRadius:14, overflow:'hidden'}}>
               <button onClick={() => onEscolher(nome)} style={{display:'flex', alignItems:'center', gap:12, background:'transparent', border:'none', padding:'15px 16px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', width:'100%'}}>
@@ -5150,6 +5171,7 @@ function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onAbrirRelato
                       {pend > 0 && <Pilula n={pend} texto="p/ validar" fg="#92400E" bg="#FDE68A"/>}
                       {semCheck > 0 && <Pilula n={semCheck} texto="sem checklist hoje" fg="#991B1B" bg={COR.vermelhoBg}/>}
                       {atraso > 0 && <Pilula n={atraso} texto="c/ atraso" fg="#9A3412" bg="#FFEDD5"/>}
+                      {probl > 0 && <Pilula n={probl} texto="problemas na semana" fg="#7C2D12" bg="#FEF3C7"/>}
                     </div>
                   ) : (
                     <div style={{fontSize:12.5, color:COR.verde, fontWeight:600, display:'flex', alignItems:'center', gap:4}}><CheckCircle2 size={13}/> Tudo em dia</div>
@@ -5157,7 +5179,10 @@ function ValidadorSelecionaObra({ maquinas, registros, onEscolher, onAbrirRelato
                 </div>
                 <ChevronRight size={20} color={COR.cinza} style={{flexShrink:0}}/>
               </button>
-              <div style={{borderTop:`1px solid ${COR.borda}`, padding:'8px 12px', display:'flex', justifyContent:'flex-end', background:'#FAFBFC'}}>
+              <div style={{borderTop:`1px solid ${COR.borda}`, padding:'8px 12px', display:'flex', justifyContent:'flex-end', gap:8, flexWrap:'wrap', background:'#FAFBFC'}}>
+                <button onClick={() => onAbrirProblemas(nome)} style={{display:'inline-flex', alignItems:'center', gap:6, background:'#FFFBEB', color:'#92400E', border:'1px solid #FDE68A', borderRadius:9, padding:'7px 14px', fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>
+                  <AlertTriangle size={15}/> Problemas da semana
+                </button>
                 <button onClick={() => onAbrirRelatorio(nome)} style={{display:'inline-flex', alignItems:'center', gap:6, background:'#EFF6FF', color:COR.azul, border:'1px solid #BFD4EC', borderRadius:9, padding:'7px 14px', fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit'}}>
                   <BarChart3 size={15}/> Relatório desta obra
                 </button>
@@ -5365,6 +5390,7 @@ function App() {
   const [valObra, setValObra] = useState(null);
   const [valTela, setValTela] = useState('validar'); // 'validar' | 'relatorios'
   const [valObraRelatorio, setValObraRelatorio] = useState(null); // obra travada p/ relatório
+  const [valObraProblemas, setValObraProblemas] = useState(null); // obra travada p/ problemas
   const [maquinas, setMaquinas] = useState([]);
   const [revisoes, setRevisoes] = useState([]);
   const [movimentacoes, setMovimentacoes] = useState([]);
@@ -5413,6 +5439,7 @@ function App() {
 
     // 3) VALIDADOR
     if (modo === 'validador') {
+      if (valObraProblemas) { setValObraProblemas(null); return true; }
       if (valObraRelatorio) { setValObraRelatorio(null); return true; }
       if (valObra) { setValObra(null); return true; }
       if (logadoValidador) { setValTela('validar'); }
@@ -5926,10 +5953,14 @@ function App() {
         <main style={{padding:'24px 16px 60px'}}>
           {carregando ? (
             <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando…</p>
+          ) : valObraProblemas ? (
+            <TelaProblemas registros={registros} maquinas={maquinas} obras={obras}
+              obraFixa={valObraProblemas} onVoltar={() => setValObraProblemas(null)} />
           ) : valObraRelatorio ? (
             <TelaRelatorios registros={registros} maquinas={maquinas} obraFixa={valObraRelatorio} onVoltar={() => setValObraRelatorio(null)} onSalvarAjuste={salvarAjusteRegistro} />
           ) : !valObra ? (
-            <ValidadorSelecionaObra maquinas={maquinas} registros={registros} onEscolher={setValObra} onAbrirRelatorio={setValObraRelatorio} onVoltar={sairValidador} />
+            <ValidadorSelecionaObra maquinas={maquinas} registros={registros} onEscolher={setValObra}
+              onAbrirRelatorio={setValObraRelatorio} onAbrirProblemas={setValObraProblemas} onVoltar={sairValidador} />
           ) : (
             <ValidadorRegistros obra={valObra} registros={registros} maquinas={maquinas} onValidar={validarRegistro} onVoltar={() => setValObra(null)} />
           )}
