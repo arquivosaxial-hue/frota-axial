@@ -688,6 +688,13 @@ function diaLocal(dataISO) {
   return `${y}-${m}-${dia}`;
 }
 
+// 'YYYY-MM-DD' -> 'DD/MM' (o ano fica implícito no cabeçalho do período)
+function dataBR(iso) {
+  if (!iso) return '—';
+  const p = String(iso).split('-');
+  return p.length === 3 ? `${p[2]}/${p[1]}` : String(iso);
+}
+
 function unidadeSufixo(m) { return (m && m.unidade === 'km') ? 'km' : 'h'; }
 function unidadeMedidor(m) { return (m && m.unidade === 'km') ? 'Hodômetro' : 'Horímetro'; }
 function unidadeTrabalho(m) { return (m && m.unidade === 'km') ? 'Km rodados' : 'Horas trabalhadas'; }
@@ -749,7 +756,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v70';
+const APP_VERSION = 'v71';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -3675,6 +3682,358 @@ function CalendarioMaquina({ maquina, registros, ini, fim, onEditarDia }) {
   );
 }
 
+// ============================================================
+// ADMIN: RESUMO SEMANAL DE PROBLEMAS
+// ------------------------------------------------------------
+// Junta as duas formas de o operador relatar problema:
+//   1. item do checklist marcado "Não OK" (com a observação dele)
+//   2. registro com status "não funcional" (com o motivo da parada)
+// O que mais importa aqui é a REINCIDÊNCIA: item que aparece Não OK
+// vários dias seguidos é problema que ninguém resolveu.
+// ============================================================
+
+// Segunda-feira da semana de uma data (ISO 'YYYY-MM-DD')
+function segundaDaSemana(iso) {
+  const d = new Date(iso + 'T12:00:00');
+  const dow = (d.getDay() + 6) % 7;          // 0 = segunda
+  d.setDate(d.getDate() - dow);
+  return diaLocal(d);
+}
+function somarDias(iso, n) {
+  const d = new Date(iso + 'T12:00:00');
+  d.setDate(d.getDate() + n);
+  return diaLocal(d);
+}
+
+// Monta o resumo de problemas de um período.
+// Devolve { porItem, porMaquina, paradas, totais }
+function resumoProblemas(registros, maquinas, obra, ini, fim) {
+  const mapaM = {};
+  maquinas.forEach(m => { mapaM[m.id] = m; });
+
+  const noPeriodo = registros.filter(r => {
+    const dia = r.dataRef || diaLocal(r.criadoEm);
+    if (!dia || dia < ini || dia > fim) return false;
+    if (obra && obra !== 'todas' && r.obra !== obra) return false;
+    return true;
+  });
+
+  const porItem = {};      // item -> { ocorrencias, maquinas:Set, dias:Set }
+  const porMaquina = {};   // maquinaId -> { m, itens:{item:[{dia,obs,operador}]}, paradas:[] }
+  const paradas = [];
+
+  for (const r of noPeriodo) {
+    const dia = r.dataRef || diaLocal(r.criadoEm);
+    const m = mapaM[r.maquinaId];
+    const chave = r.maquinaId || r.maquinaCodigo;
+    if (!porMaquina[chave]) {
+      porMaquina[chave] = {
+        m: m || { id: chave, codigo: r.maquinaCodigo, descricao: r.maquinaDescricao, obra: r.obra },
+        itens: {}, paradas: [],
+      };
+    }
+    const bucket = porMaquina[chave];
+
+    for (const c of (r.checklist || [])) {
+      if (!c || c.status !== 'nok') continue;
+      const nome = c.item || '(item sem nome)';
+      if (!porItem[nome]) porItem[nome] = { ocorrencias: 0, maquinas: new Set(), dias: new Set() };
+      porItem[nome].ocorrencias++;
+      porItem[nome].maquinas.add(chave);
+      porItem[nome].dias.add(dia);
+      if (!bucket.itens[nome]) bucket.itens[nome] = [];
+      bucket.itens[nome].push({ dia, obs: (c.obs || '').trim(), operador: r.operador || '' });
+    }
+
+    if (r.status === 'nao_funcional') {
+      const p = { dia, motivo: r.motivoParada || 'Sem motivo', observacao: (r.observacao || '').split('\n')[0], operador: r.operador || '' };
+      bucket.paradas.push(p);
+      paradas.push({ ...p, maquina: bucket.m });
+    }
+  }
+
+  const listaItens = Object.entries(porItem)
+    .map(([item, v]) => ({ item, ocorrencias: v.ocorrencias, maquinas: v.maquinas.size, dias: v.dias.size }))
+    .sort((a, b) => b.ocorrencias - a.ocorrencias || a.item.localeCompare(b.item, 'pt-BR'));
+
+  const listaMaquinas = Object.values(porMaquina)
+    .map(b => {
+      const itens = Object.entries(b.itens)
+        .map(([item, ocs]) => ({
+          item,
+          // dias DISTINTOS: o operador pode lançar complemento no mesmo dia, e
+          // dois apontamentos da mesma data não são reincidência — é o mesmo dia.
+          dias: Array.from(new Set(ocs.map(o => o.dia))).sort(),
+          // observações sem repetição literal (o operador costuma repetir o texto)
+          obs: Array.from(new Set(ocs.map(o => o.obs).filter(Boolean))),
+          operadores: Array.from(new Set(ocs.map(o => o.operador).filter(Boolean))),
+        }))
+        .sort((a, b2) => b2.dias.length - a.dias.length || a.item.localeCompare(b2.item, 'pt-BR'));
+      return { ...b, listaItens: itens, total: itens.reduce((s, i) => s + i.dias.length, 0) };
+    })
+    .filter(b => b.listaItens.length > 0 || b.paradas.length > 0)
+    .sort((a, b) => (b.total + b.paradas.length) - (a.total + a.paradas.length));
+
+  return {
+    porItem: listaItens,
+    porMaquina: listaMaquinas,
+    paradas: paradas.sort((a, b) => a.dia.localeCompare(b.dia)),
+    totais: {
+      registros: noPeriodo.length,
+      maquinasComProblema: listaMaquinas.length,
+      itensNok: listaItens.reduce((s, i) => s + i.ocorrencias, 0),
+      diasParado: paradas.length,
+    },
+  };
+}
+
+function gerarPdfProblemas(res, obra, ini, fim) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210, H = 297;
+  let y = 0;
+
+  function cabecalho() {
+    doc.setFillColor(27, 58, 92); doc.rect(0, 0, W, 26, 'F');
+    doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
+    doc.text('Resumo de Problemas', 14, 12);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+    doc.text('Construtora Axial — Gestão de Frota', 14, 19);
+    desenharLogoPdf(doc, W);
+    y = 34;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(27, 58, 92);
+    doc.text(`${obra === 'todas' ? 'Todas as obras' : obra}`, 14, y); y += 5.5;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(110);
+    doc.text(`Período: ${dataBR(ini)} a ${dataBR(fim)}`, 14, y); y += 8;
+  }
+  function quebra(alt) { if (y + alt > H - 16) { doc.addPage(); cabecalho(); } }
+  function secao(titulo) {
+    quebra(14);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(27, 58, 92);
+    doc.text(titulo, 14, y); y += 2;
+    doc.setDrawColor(200); doc.line(14, y, W - 14, y); y += 6;
+  }
+
+  cabecalho();
+
+  // resumo de números
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(40);
+  doc.text(`${res.totais.itensNok} apontamento(s) de item fora de conformidade  ·  `
+         + `${res.totais.maquinasComProblema} máquina(s) envolvida(s)  ·  `
+         + `${res.totais.diasParado} dia(s) com máquina parada`, 14, y);
+  y += 10;
+
+  if (res.porItem.length) {
+    secao('Itens mais apontados');
+    doc.setFontSize(9); doc.setTextColor(60); doc.setFont('helvetica', 'bold');
+    doc.text('ITEM', 14, y); doc.text('VEZES', 140, y); doc.text('MÁQUINAS', 160, y); doc.text('DIAS', 190, y);
+    y += 5;
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(30);
+    res.porItem.forEach((i, idx) => {
+      quebra(7);
+      if (idx % 2 === 0) { doc.setFillColor(247, 249, 251); doc.rect(12, y - 3.6, W - 24, 6, 'F'); }
+      doc.text(doc.splitTextToSize(i.item, 120)[0], 14, y);
+      doc.text(String(i.ocorrencias), 140, y);
+      doc.text(String(i.maquinas), 160, y);
+      doc.text(String(i.dias), 190, y);
+      y += 6;
+    });
+    y += 5;
+  }
+
+  if (res.porMaquina.length) {
+    secao('Detalhe por máquina');
+    res.porMaquina.forEach(b => {
+      quebra(16);
+      doc.setFillColor(233, 238, 245); doc.rect(12, y - 4, W - 24, 7, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(27, 58, 92);
+      doc.text(`${b.m.codigo ? b.m.codigo + ' · ' : ''}${b.m.descricao}`, 14, y + 0.8);
+      y += 9;
+
+      b.listaItens.forEach(i => {
+        quebra(8);
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(i.dias.length >= 3 ? 190 : 40, i.dias.length >= 3 ? 30 : 40, 40);
+        const rein = i.dias.length >= 3 ? `  [${i.dias.length}x — reincidente]` : (i.dias.length > 1 ? `  [${i.dias.length}x]` : '');
+        doc.text('• ' + i.item + rein, 17, y);
+        y += 4.5;
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(110);
+        doc.text('dias: ' + i.dias.map(dataBR).join(', '), 21, y);
+        y += 4.5;
+        i.obs.forEach(o => {
+          quebra(6);
+          doc.splitTextToSize('“' + o + '”', 160).forEach(l => { doc.text(l, 21, y); y += 4; });
+        });
+        y += 1.5;
+      });
+
+      if (b.paradas.length) {
+        quebra(8);
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(190, 30, 40);
+        doc.text(`• Máquina parada em ${b.paradas.length} dia(s)`, 17, y); y += 4.5;
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(110);
+        b.paradas.forEach(p => {
+          quebra(5);
+          doc.text(`${dataBR(p.dia)} — ${p.motivo}${p.observacao ? ': ' + p.observacao : ''}`, 21, y);
+          y += 4;
+        });
+        y += 1.5;
+      }
+      y += 3;
+    });
+  }
+
+  if (!res.porItem.length && !res.porMaquina.length) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(60);
+    doc.text('Nenhum problema apontado no período.', 14, y);
+  }
+
+  const tot = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= tot; p++) {
+    doc.setPage(p);
+    doc.setFontSize(8); doc.setTextColor(150); doc.setFont('helvetica', 'normal');
+    doc.text(`Emitido em ${new Date().toLocaleString('pt-BR')}`, 14, H - 8);
+    doc.text(`Página ${p} de ${tot}`, W - 14, H - 8, { align: 'right' });
+  }
+  doc.save(`problemas_${(obra === 'todas' ? 'frota' : obra).replace(/[^\w-]+/g, '_')}_${ini}_a_${fim}.pdf`);
+}
+
+function TelaProblemas({ registros, maquinas, obras, onVoltar }) {
+  // começa na semana passada fechada (segunda a domingo)
+  const hoje = diaLocal(new Date());
+  const [semana, setSemana] = useState(segundaDaSemana(hoje));
+  // IGUÁ é o caso que motivou a tela; se existir, vem selecionada
+  const nomesObra = obras.map(o => o.nome);
+  const [obra, setObra] = useState(nomesObra.find(n => /IGU/i.test(n)) || 'todas');
+
+  const ini = semana, fim = somarDias(semana, 6);
+  const res = resumoProblemas(registros, maquinas, obra, ini, fim);
+
+  const estiloSem = { ...S.botaoSec, padding: '8px 12px', fontSize: 13.5 };
+
+  return (
+    <div style={{maxWidth:820, margin:'0 auto'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:18}}>
+        <button onClick={onVoltar} style={{...S.botaoSec, padding:10, borderRadius:10}} aria-label="Voltar"><ArrowLeft size={20}/></button>
+        <div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800, color:COR.azul}}>Problemas da semana</h2>
+          <p style={{margin:'2px 0 0', color:COR.cinza, fontSize:13.5}}>O que os operadores apontaram no checklist</p>
+        </div>
+      </div>
+
+      <div style={{...S.cardFiltro, marginBottom:18, display:'flex', flexDirection:'column', gap:10}}>
+        <CabecalhoFiltros texto="Período e obra" />
+        <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
+          <button onClick={() => setSemana(somarDias(semana, -7))} style={estiloSem}>‹ Semana anterior</button>
+          <div style={{fontSize:14.5, fontWeight:700, color:COR.texto, padding:'0 6px'}}>
+            {dataBR(ini)} a {dataBR(fim)}
+          </div>
+          <button onClick={() => setSemana(somarDias(semana, 7))} disabled={somarDias(semana,7) > hoje}
+                  style={{...estiloSem, opacity: somarDias(semana,7) > hoje ? .4 : 1}}>Próxima ›</button>
+          <button onClick={() => setSemana(segundaDaSemana(hoje))} style={{...estiloSem, marginLeft:'auto'}}>Semana atual</button>
+        </div>
+        <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
+          <select value={obra} style={{...S.campo, width:'auto', padding:'9px 12px'}} onChange={e => setObra(e.target.value)}>
+            <option value="todas">Todas as obras</option>
+            {obras.map(o => <option key={o.id} value={o.nome}>{o.nome}</option>)}
+          </select>
+          <button onClick={() => gerarPdfProblemas(res, obra, ini, fim)}
+                  disabled={res.totais.itensNok === 0 && res.totais.diasParado === 0}
+                  style={{...S.botaoSec, opacity:(res.totais.itensNok || res.totais.diasParado) ? 1 : .5}}>
+            <FileText size={17}/> Exportar PDF
+          </button>
+        </div>
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:18}}>
+        {[
+          { rot:'Apontamentos', val: res.totais.itensNok, cor: res.totais.itensNok ? COR.vermelho : COR.verde },
+          { rot:'Máquinas afetadas', val: res.totais.maquinasComProblema, cor: COR.azul },
+          { rot:'Dias com parada', val: res.totais.diasParado, cor: res.totais.diasParado ? COR.amarelo : COR.verde },
+          { rot:'Checklists no período', val: res.totais.registros, cor: COR.cinza },
+        ].map(c => (
+          <div key={c.rot} style={{...S.card, padding:'14px 16px'}}>
+            <div style={{fontSize:26, fontWeight:800, color:c.cor, lineHeight:1.1}}>{c.val}</div>
+            <div style={{fontSize:12.5, color:COR.cinza, fontWeight:600, marginTop:2}}>{c.rot}</div>
+          </div>
+        ))}
+      </div>
+
+      {res.porItem.length === 0 && res.paradas.length === 0 ? (
+        <div style={{...S.card, display:'flex', alignItems:'center', gap:10}}>
+          <CheckCircle2 size={20} color={COR.verde}/>
+          <span style={{fontSize:14, color:COR.texto, fontWeight:600}}>
+            Nenhum problema apontado nesta semana{obra !== 'todas' ? ` em ${obra}` : ''}.
+          </span>
+        </div>
+      ) : (
+        <>
+          {res.porItem.length > 0 && (
+            <div style={{...S.card, padding:0, overflow:'hidden', marginBottom:16}}>
+              <div style={{padding:'13px 16px', borderBottom:`1px solid ${COR.borda}`, background:'#FFFBEB', display:'flex', alignItems:'center', gap:9}}>
+                <AlertTriangle size={18} color={COR.amarelo}/>
+                <span style={{fontSize:15, fontWeight:800, color:'#92400E'}}>Itens mais apontados</span>
+              </div>
+              {res.porItem.map(i => (
+                <div key={i.item} style={{display:'flex', alignItems:'center', gap:10, padding:'11px 16px', borderBottom:`1px solid ${COR.bg}`}}>
+                  <div style={{flex:1, minWidth:0, fontSize:14, fontWeight:600, color:COR.texto}}>{i.item}</div>
+                  <div style={{fontSize:12.5, color:COR.cinza, whiteSpace:'nowrap'}}>
+                    {i.maquinas} máq. · {i.dias} dia(s)
+                  </div>
+                  <div style={{minWidth:34, textAlign:'right', fontSize:16, fontWeight:800, color:COR.vermelho}}>{i.ocorrencias}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {res.porMaquina.map(b => (
+            <div key={b.m.id} style={{...S.card, padding:0, overflow:'hidden', marginBottom:12}}>
+              <div style={{padding:'12px 16px', borderBottom:`1px solid ${COR.borda}`, background:'#F8FAFC'}}>
+                <div style={{fontSize:15, fontWeight:800, color:COR.texto}}>
+                  {b.m.codigo ? b.m.codigo + ' · ' : ''}{b.m.descricao}
+                </div>
+                <div style={{fontSize:12.5, color:COR.cinza, marginTop:1}}>{b.m.obra || 'Sem obra'}</div>
+              </div>
+              <div style={{padding:'12px 16px', display:'flex', flexDirection:'column', gap:11}}>
+                {b.listaItens.map(i => (
+                  <div key={i.item}>
+                    <div style={{display:'flex', alignItems:'baseline', gap:8, flexWrap:'wrap'}}>
+                      <span style={{fontSize:14, fontWeight:700, color: i.dias.length >= 3 ? COR.vermelho : COR.texto}}>{i.item}</span>
+                      {i.dias.length >= 3 && (
+                        <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>{i.dias.length}x · reincidente</Badge>
+                      )}
+                      {i.dias.length === 2 && <span style={{fontSize:12, color:COR.cinza, fontWeight:700}}>2x</span>}
+                    </div>
+                    <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>
+                      {i.dias.map(dataBR).join(' · ')}
+                    </div>
+                    {i.obs.map((o, k) => (
+                      <div key={k} style={{fontSize:13, color:COR.texto, marginTop:4, paddingLeft:10, borderLeft:`3px solid ${COR.borda}`, fontStyle:'italic'}}>
+                        {o}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                {b.paradas.length > 0 && (
+                  <div style={{background:COR.vermelhoBg, borderRadius:10, padding:'10px 12px'}}>
+                    <div style={{fontSize:13.5, fontWeight:800, color:COR.vermelho, marginBottom:4}}>
+                      Parada em {b.paradas.length} dia(s)
+                    </div>
+                    {b.paradas.map((p, k) => (
+                      <div key={k} style={{fontSize:12.5, color:'#7F1D1D'}}>
+                        {dataBR(p.dia)} — {p.motivo}{p.observacao ? `: ${p.observacao}` : ''}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 function TelaRelatorios({ registros, maquinas, onVoltar, onSalvarAjuste, onExcluirDia, obraFixa, responsavel, onRecarregar }) {
   const hoje = diaLocal(new Date());
   const mesPassado = diaLocal(new Date(Date.now() - 30*86400000));
@@ -5636,6 +5995,9 @@ function App() {
                 <button onClick={() => setTela('relatorios')} style={estilo(estA('relatorios'))}>
                   <BarChart3 size={16}/> Relatórios
                 </button>
+                <button onClick={() => setTela('problemas')} style={estilo(estA('problemas'))}>
+                  <AlertTriangle size={16}/> Problemas
+                </button>
                 <button onClick={() => setShowChecklist(true)} style={estilo(false)}>
                   <List size={16}/> Checklist padrão
                 </button>
@@ -5716,6 +6078,12 @@ function App() {
         )}
         {tela === 'historico' && (
           <TelaHistorico onVoltar={() => setTela('lista')} />
+        )}
+
+        {tela === 'problemas' && (
+          <TelaProblemas
+            registros={registros} maquinas={maquinas} obras={obras}
+            onVoltar={() => setTela('lista')} />
         )}
         {tela === 'revisoes' && (
           <TelaRevisoesPendentes maquinas={maquinas} revisoes={revisoes} onVoltar={() => setTela('lista')} onRegistrarRevisao={registrarRevisao} />
