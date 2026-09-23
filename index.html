@@ -756,7 +756,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v72';
+const APP_VERSION = 'v73';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -869,7 +869,49 @@ async function listarRegistros() {
 // Comprime uma imagem (File/Blob) para no máx ~1280px no maior lado, JPEG qualidade 0.7.
 // Reduz drasticamente o tamanho (ex: 8MB -> ~300KB), mantendo o horímetro legível.
 // Se algo falhar, devolve o arquivo original (nunca trava o registro).
-function comprimirImagem(arquivo, maxLado = 1280, qualidade = 0.7) {
+// ------------------------------------------------------------
+// HEIC (iPhone). Quando o navegador não sabe decodificar esse formato, o canvas
+// falha e a foto ia inteira para o Storage — foi assim que 142 arquivos de ~3,6 MB
+// viraram 58% do espaço. A biblioteca só é baixada se um HEIC aparecer E o
+// caminho nativo falhar, então quem usa Android ou Safari não paga nada por ela.
+// ------------------------------------------------------------
+let __heicLib = null;
+function carregarHeic() {
+  if (__heicLib) return __heicLib;
+  __heicLib = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js';
+    s.onload = res;
+    s.onerror = () => rej(new Error('conversor de HEIC indisponível'));
+    document.head.appendChild(s);
+  });
+  return __heicLib;
+}
+function ehHeic(arquivo) {
+  const t = (arquivo && arquivo.type || '').toLowerCase();
+  const n = (arquivo && arquivo.name || '').toLowerCase();
+  return t.includes('heic') || t.includes('heif') || /\.hei[cf]$/.test(n);
+}
+
+// Comprime; se o navegador não der conta do formato e for HEIC, converte antes.
+async function comprimirImagem(arquivo, maxLado = 1280, qualidade = 0.7) {
+  const direto = await comprimirViaCanvas(arquivo, maxLado, qualidade);
+  if (direto !== arquivo) return direto;          // deu certo pelo caminho normal
+  if (!ehHeic(arquivo)) return arquivo;
+  try {
+    if (!window.heic2any) await carregarHeic();
+    const jpeg = await window.heic2any({ blob: arquivo, toType: 'image/jpeg', quality: 0.9 });
+    const convertido = Array.isArray(jpeg) ? jpeg[0] : jpeg;
+    try { convertido.name = (arquivo.name || 'foto').replace(/\.[^.]+$/, '') + '.jpg'; } catch (e) {}
+    const comprimido = await comprimirViaCanvas(convertido, maxLado, qualidade);
+    return comprimido !== convertido ? comprimido : convertido;
+  } catch (e) {
+    console.warn('HEIC não convertido', e);
+    return arquivo;
+  }
+}
+
+function comprimirViaCanvas(arquivo, maxLado = 1280, qualidade = 0.7) {
   return new Promise((resolve) => {
     try {
       if (!arquivo) return resolve(arquivo);
