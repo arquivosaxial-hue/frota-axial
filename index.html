@@ -246,6 +246,9 @@ const PlusCircle     = (p) => <LucideIcon name="plus-circle" {...p} />;
 const ChevronDown    = (p) => <LucideIcon name="chevron-down" {...p} />;
 const ArrowLeft      = (p) => <LucideIcon name="arrow-left" {...p} />;
 const Gauge          = (p) => <LucideIcon name="gauge" {...p} />;
+const ShieldCheck    = (p) => <LucideIcon name="shield-check" {...p} />;
+const Repeat         = (p) => <LucideIcon name="repeat" {...p} />;
+const Receipt        = (p) => <LucideIcon name="receipt" {...p} />;
 const Building       = (p) => <LucideIcon name="building" {...p} />;
 const Factory        = (p) => <LucideIcon name="factory" {...p} />;
 const Power          = (p) => <LucideIcon name="power" {...p} />;
@@ -558,6 +561,90 @@ async function listarMovimentacoes(limite) {
 }
 
 // --- Revisões (histórico de manutenção) ---
+// ============================================================
+// MANUTENÇÃO E GARANTIA
+// ------------------------------------------------------------
+// O app lê de VIEWS, nunca das tabelas: nota fiscal, valor pago,
+// CNPJ e o PDF ficam fora do alcance da chave pública. As views
+// entregam só o que ajuda a decidir — data, km, peça, prazo.
+// ============================================================
+async function listarManutencoesDaMaquina(maquinaId) {
+  if (!supabaseClient || !navigator.onLine || !maquinaId) return [];
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('v_manutencoes_app').select('*')
+        .eq('maquina_id', maquinaId).order('data_servico', { ascending: false }), 8000);
+    if (error) throw error;
+    return (data || []).map(m => ({
+      id: m.id, veiculo: m.veiculo, placa: m.placa,
+      data: m.data_servico, km: m.km_horimetro, tipo: m.tipo_manutencao,
+      fornecedor: m.fornecedor || '', descricao: m.descricao || '',
+      pagoPor: m.pago_por || '', fonte: m.fonte || '',
+      temValor: m.tem_valor === true,
+      qtdItens: Number(m.qtd_itens) || 0, unidade: m.unidade,
+    }));
+  } catch (e) { console.warn('listarManutencoesDaMaquina', e); return []; }
+}
+
+async function listarItensDeManutencoes(ids) {
+  if (!supabaseClient || !navigator.onLine || !ids || !ids.length) return {};
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('v_manutencao_itens_app').select('*').in('manutencao_id', ids), 8000);
+    if (error) throw error;
+    const porManutencao = {};
+    (data || []).forEach(i => {
+      (porManutencao[i.manutencao_id] = porManutencao[i.manutencao_id] || []).push({
+        id: i.id, descricao: i.descricao || '', tipo: i.tipo || '',
+        categoria: i.categoria || '', posicao: i.posicao || '',
+        quantidade: i.quantidade, garantiaDias: i.garantia_dias,
+        garantiaKm: i.garantia_km, garantiaObs: i.garantia_obs || '',
+      });
+    });
+    return porManutencao;
+  } catch (e) { console.warn('listarItensDeManutencoes', e); return {}; }
+}
+
+async function listarGarantias() {
+  if (!supabaseClient || !navigator.onLine) return [];
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('v_garantias_app').select('*').order('garantia_ate', { ascending: true }), 10000);
+    if (error) throw error;
+    return (data || []).map(g => ({
+      id: g.item_id, maquinaId: g.maquina_id, veiculo: g.veiculo || '—',
+      data: g.data_servico, kmServico: g.km_servico, kmAtual: g.km_atual,
+      unidade: g.unidade, descricao: g.descricao || '', categoria: g.categoria || '',
+      posicao: g.posicao || '', garantiaDias: g.garantia_dias, garantiaKm: g.garantia_km,
+      garantiaAte: g.garantia_ate, garantiaKmAte: g.garantia_km_ate,
+      status: g.status_garantia,
+    }));
+  } catch (e) { console.warn('listarGarantias', e); return []; }
+}
+
+async function listarRepeticoes() {
+  if (!supabaseClient || !navigator.onLine) return [];
+  try {
+    const { data, error } = await comTimeout(
+      supabaseClient.from('v_repeticoes_app').select('*').order('dias_entre', { ascending: true }), 10000);
+    if (error) throw error;
+    const lista = (data || []).map(r => ({
+      veiculo: r.veiculo || '—', maquinaId: r.maquina_id, categoria: r.categoria || '',
+      primeira: r.primeira_troca, primeiraDescricao: r.primeira_descricao || '',
+      primeiroFornecedor: r.primeiro_fornecedor || '',
+      garantiaDias: r.garantia_dias, cobertaAte: r.coberta_ate,
+      segunda: r.segunda_troca, segundaDescricao: r.segunda_descricao || '',
+      segundoFornecedor: r.segundo_fornecedor || '',
+      diasEntre: Number(r.dias_entre),
+      mesmaPeca: r.mesma_peca === true, palavraChave: r.palavra_chave || '',
+    }));
+    // A mesma peça de volta é um caso para conferir nota; o mesmo SISTEMA de
+    // volta é só um sinal. Os dois ficam na tela, mas nessa ordem.
+    lista.sort((a, b) => (b.mesmaPeca - a.mesmaPeca) || (a.diasEntre - b.diasEntre));
+    return lista;
+  } catch (e) { console.warn('listarRepeticoes', e); return []; }
+}
+
 async function listarRevisoes() {
   if (!supabaseClient || !navigator.onLine) return cacheLer('revisoes', []);
   try {
@@ -796,7 +883,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v75';
+const APP_VERSION = 'v76';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -2706,7 +2793,7 @@ function TelaHistorico({ onVoltar }) {
 // ============================================================
 // CARD DE MÁQUINA (item da lista)
 // ============================================================
-function CardMaquina({ m, onEditar, onToggleAtiva, onRegistrarRevisao, onVerHistorico }) {
+function CardMaquina({ m, onEditar, onToggleAtiva, onRegistrarRevisao, onVerHistorico, onVerManutencao }) {
   const man = m.possuiHorimetro ? calcularManutencao(m) : null;
   return (
     <div style={{...S.card, padding:0, overflow:'hidden', opacity: m.ativa ? 1 : 0.62}}>
@@ -2751,7 +2838,14 @@ function CardMaquina({ m, onEditar, onToggleAtiva, onRegistrarRevisao, onVerHist
           {m.possuiHorimetro && (onRegistrarRevisao || onVerHistorico) && (
             <div style={{display:'flex', gap:8, marginTop:8, flexWrap:'wrap'}}>
               {onRegistrarRevisao && <button onClick={() => onRegistrarRevisao(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1, color:COR.azul, borderColor:'#BFD4EC'}}><Wrench size={15}/> Registrar revisão</button>}
-              {onVerHistorico && <button onClick={() => onVerHistorico(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1}}><Clock size={15}/> Histórico</button>}
+              {onVerHistorico && <button onClick={() => onVerHistorico(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1}}><Clock size={15}/> Revisões</button>}
+            </div>
+          )}
+          {onVerManutencao && (
+            <div style={{display:'flex', gap:8, marginTop:8}}>
+              <button onClick={() => onVerManutencao(m)} style={{...S.botaoSec, padding:'8px 14px', fontSize:13.5, flex:1, color:COR.azul, borderColor:'#BFD4EC'}}>
+                <Receipt size={15}/> Manutenções
+              </button>
             </div>
           )}
         </div>
@@ -2823,6 +2917,7 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
   const [mostrarInativas, setMostrarInativas] = useState(false);
   const [revisarMaq, setRevisarMaq] = useState(null);   // máquina p/ registrar revisão
   const [historicoMaq, setHistoricoMaq] = useState(null); // máquina p/ ver histórico
+  const [manutencaoMaq, setManutencaoMaq] = useState(null); // máquina p/ ver notas de manutenção
 
   // Empresas responsáveis: "Axial" para as próprias, a locadora para as locadas.
   // É por aqui que se tira a relação de máquinas de cada contrato de locação.
@@ -2936,7 +3031,7 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
         </div>
       ) : (
         <div style={{display:'flex', flexDirection:'column', gap:12}}>
-          {filtradas.map(m => <CardMaquina key={m.id} m={m} onEditar={onEditar} onToggleAtiva={onToggleAtiva} onRegistrarRevisao={setRevisarMaq} onVerHistorico={setHistoricoMaq} />)}
+          {filtradas.map(m => <CardMaquina key={m.id} m={m} onEditar={onEditar} onToggleAtiva={onToggleAtiva} onRegistrarRevisao={setRevisarMaq} onVerHistorico={setHistoricoMaq} onVerManutencao={setManutencaoMaq} />)}
         </div>
       )}
 
@@ -2949,6 +3044,9 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
       )}
       {historicoMaq && (
         <HistoricoRevisoes maquina={historicoMaq} revisoes={revisoes} onFechar={() => setHistoricoMaq(null)} />
+      )}
+      {manutencaoMaq && (
+        <HistoricoManutencao maquina={manutencaoMaq} onFechar={() => setManutencaoMaq(null)} />
       )}
     </div>
   );
@@ -4653,6 +4751,453 @@ function CardRevisao({ maquinas, compacto }) {
   );
 }
 
+// ============================================================
+// MANUTENÇÃO — HISTÓRICO, GARANTIAS E REPETIÇÕES
+// ------------------------------------------------------------
+// Três telas que funcionam só com leitura: histórico por veículo,
+// painel de garantias e alerta de repetição. Nenhuma mostra valor,
+// nota fiscal ou CNPJ — isso fica fora do alcance da chave pública
+// do app. O lançamento de manutenção e o relatório de custo
+// dependem de login próprio (Supabase Auth) e ficam para depois.
+// ============================================================
+
+// 'YYYY-MM-DD' -> 'DD/MM/AAAA'
+function dataBRLonga(iso) {
+  if (!iso) return '—';
+  const p = String(iso).slice(0, 10).split('-');
+  return p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : String(iso);
+}
+
+function corStatusGarantia(st) {
+  if (st === 'em garantia') return { fg: COR.verde,   bg: COR.verdeBg,   txt: 'Em garantia' };
+  if (st === 'vencendo')    return { fg: COR.amarelo, bg: COR.amareloBg, txt: 'Vencendo' };
+  if (st === 'sem data')    return { fg: '#7C3AED',   bg: '#F5F3FF',     txt: 'Sem data' };
+  return { fg: COR.cinza, bg: '#F3F4F6', txt: 'Vencida' };
+}
+
+// ------------------------------------------------------------
+// Histórico de manutenções de UMA máquina (modal)
+// ------------------------------------------------------------
+function HistoricoManutencao({ maquina, onFechar }) {
+  const [lista, setLista] = useState(null);
+  const [itens, setItens] = useState({});
+  const [aberto, setAberto] = useState(null);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const ms = await listarManutencoesDaMaquina(maquina.id);
+      if (!vivo) return;
+      setLista(ms);
+      if (ms.length) {
+        const its = await listarItensDeManutencoes(ms.map(m => m.id));
+        if (vivo) setItens(its);
+      }
+    })();
+    return () => { vivo = false; };
+  }, [maquina.id]);
+
+  const suf = unidadeSufixo(maquina);
+  const porAno = {};
+  (lista || []).forEach(m => {
+    const ano = (m.data || '').slice(0, 4) || 'sem data';
+    (porAno[ano] = porAno[ano] || []).push(m);
+  });
+  const anos = Object.keys(porAno).sort().reverse();
+  const totalItens = (lista || []).reduce((n, m) => n + (m.qtdItens || 0), 0);
+
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(15,23,42,.55)', zIndex:600, display:'flex', alignItems:'center', justifyContent:'center', padding:18}} onClick={onFechar}>
+      <div style={{...S.card, maxWidth:660, width:'100%', maxHeight:'92vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14}}>
+          <div>
+            <h3 style={{margin:0, fontSize:18, fontWeight:800, color:COR.azul}}>Histórico de manutenção</h3>
+            <p style={{margin:'3px 0 0', fontSize:13, color:COR.cinza}}>
+              {maquina.codigo ? maquina.codigo + ' · ' : ''}{maquina.descricao}
+              {maquina.placa ? ' · ' + maquina.placa : ''}
+            </p>
+          </div>
+          <button onClick={onFechar} style={{...S.botaoSec, padding:8, borderRadius:9}}><X size={18}/></button>
+        </div>
+
+        {lista === null ? (
+          <p style={{textAlign:'center', color:COR.cinza, padding:'28px 0', fontSize:14}}>Carregando…</p>
+        ) : lista.length === 0 ? (
+          <div style={{background:'#F8FAFC', border:`1px solid ${COR.borda}`, borderRadius:11, padding:'16px 14px', display:'flex', alignItems:'center', gap:10}}>
+            <Receipt size={19} color={COR.cinza}/>
+            <span style={{fontSize:13.5, color:COR.cinza, lineHeight:1.45}}>
+              Nenhuma manutenção registrada para esta máquina no histórico importado.
+            </span>
+          </div>
+        ) : (
+          <>
+            <div style={{display:'flex', gap:16, flexWrap:'wrap', marginBottom:14, fontSize:13, color:COR.cinza}}>
+              <span><b style={{color:COR.texto}}>{lista.length}</b> lançamento{lista.length>1?'s':''}</span>
+              <span><b style={{color:COR.texto}}>{totalItens}</b> {totalItens===1?'item':'itens'}</span>
+              {lista[0].data && <span>último em <b style={{color:COR.texto}}>{dataBRLonga(lista[0].data)}</b></span>}
+            </div>
+
+            <div style={{display:'flex', flexDirection:'column', gap:16}}>
+              {anos.map(ano => (
+                <div key={ano}>
+                  <div style={{fontSize:12.5, fontWeight:800, color:COR.azulCl, letterSpacing:.5, marginBottom:7, textTransform:'uppercase'}}>
+                    {ano} <span style={{color:COR.cinza, fontWeight:600}}>· {porAno[ano].length} lançamento{porAno[ano].length>1?'s':''}</span>
+                  </div>
+                  <div style={{display:'flex', flexDirection:'column', gap:7}}>
+                    {porAno[ano].map(m => {
+                      const its = itens[m.id] || [];
+                      const exp = aberto === m.id;
+                      return (
+                        <div key={m.id} style={{border:`1px solid ${COR.borda}`, borderRadius:11, overflow:'hidden', background:'#fff'}}>
+                          <button onClick={() => setAberto(exp ? null : m.id)}
+                            style={{width:'100%', textAlign:'left', background:'none', border:'none',
+                                    padding:'11px 13px', cursor:'pointer', fontFamily:'inherit', display:'block'}}>
+                            <div style={{display:'flex', alignItems:'baseline', gap:9, flexWrap:'wrap'}}>
+                              <span style={{fontSize:13.5, fontWeight:800, color:COR.texto}}>
+                                {m.data ? dataBRLonga(m.data) : 'sem data'}
+                              </span>
+                              {m.km != null && (
+                                <span style={{fontSize:12, color:COR.cinza, fontWeight:600}}>
+                                  {Math.round(Number(m.km)).toLocaleString('pt-BR')} {suf}
+                                </span>
+                              )}
+                              {m.fornecedor && (
+                                <span style={{fontSize:12, color:COR.azulCl, fontWeight:700}}>{m.fornecedor}</span>
+                              )}
+                              <span style={{marginLeft:'auto', fontSize:11.5, color:COR.cinza, fontWeight:600, whiteSpace:'nowrap'}}>
+                                {(its.length || m.qtdItens)} {(its.length || m.qtdItens)===1?'item':'itens'} {exp ? '▴' : '▾'}
+                              </span>
+                            </div>
+                            <div style={{fontSize:13, color:COR.texto, marginTop:4, lineHeight:1.45}}>
+                              {m.descricao || m.tipo || '—'}
+                            </div>
+                          </button>
+                          {exp && (
+                            <div style={{borderTop:`1px solid ${COR.bg}`, background:'#FAFBFC', padding:'10px 13px'}}>
+                              {its.length === 0 ? (
+                                <span style={{fontSize:12.5, color:COR.cinza}}>Sem itens detalhados neste lançamento.</span>
+                              ) : its.map(i => (
+                                <div key={i.id} style={{display:'flex', gap:8, padding:'5px 0', flexWrap:'wrap', alignItems:'baseline', borderBottom:`1px solid #EEF2F6`}}>
+                                  <span style={{fontSize:12.5, color:COR.texto, flex:1, minWidth:160, lineHeight:1.4}}>
+                                    {i.quantidade ? Number(i.quantidade).toLocaleString('pt-BR') + 'x ' : ''}
+                                    {i.descricao || '—'}{i.posicao ? ` (${i.posicao})` : ''}
+                                  </span>
+                                  {i.categoria && (
+                                    <span style={{fontSize:11, color:COR.cinza, background:'#EEF2F6', padding:'2px 8px', borderRadius:999, whiteSpace:'nowrap'}}>
+                                      {i.categoria}
+                                    </span>
+                                  )}
+                                  {i.garantiaDias != null && (
+                                    <span style={{fontSize:11, color:COR.azul, fontWeight:700, whiteSpace:'nowrap'}}>
+                                      {i.garantiaDias} dias
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                              {m.pagoPor && (
+                                <div style={{fontSize:11.5, color:COR.cinza, marginTop:6}}>
+                                  Pago por: <b style={{color:COR.texto}}>{m.pagoPor}</b>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <p style={{fontSize:11.5, color:COR.cinza, margin:'14px 2px 0', lineHeight:1.5}}>
+              Valor pago, número da nota, CNPJ, o PDF e as anotações de conferência
+              não passam por aqui: ficam no banco, fora do alcance da chave que o app
+              usa. Quem precisa deles abre o Supabase. Enquanto o app não tiver login
+              próprio, tudo o que esta tela mostra é visível a quem abrir o endereço.
+            </p>
+          </>
+        )}
+
+        <button onClick={onFechar} style={{...S.botaoSec, width:'100%', marginTop:16}}>Fechar</button>
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// Tela de manutenção do admin: garantias + repetições
+// ------------------------------------------------------------
+function TelaManutencao({ maquinas }) {
+  const [aba, setAba] = useState('garantias');
+  const [garantias, setGarantias] = useState(null);
+  const [repeticoes, setRepeticoes] = useState(null);
+  const [filtroStatus, setFiltroStatus] = useState('ativas');
+  const [soMesmaPeca, setSoMesmaPeca] = useState(false);
+  const [filtroObra, setFiltroObra] = useState('todas');
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const [g, r] = await Promise.all([listarGarantias(), listarRepeticoes()]);
+      if (!vivo) return;
+      setGarantias(g); setRepeticoes(r);
+    })();
+    return () => { vivo = false; };
+  }, []);
+
+  const obraDaMaquina = {};
+  (maquinas || []).forEach(m => { obraDaMaquina[m.id] = m.obra || '—'; });
+  const obras = Array.from(new Set(Object.values(obraDaMaquina))).sort();
+
+  const gFiltradas = (garantias || []).filter(g => {
+    if (filtroObra !== 'todas' && obraDaMaquina[g.maquinaId] !== filtroObra) return false;
+    if (filtroStatus === 'ativas')   return g.status === 'em garantia' || g.status === 'vencendo';
+    if (filtroStatus === 'vencendo') return g.status === 'vencendo';
+    if (filtroStatus === 'sem_data') return g.status === 'sem data';
+    if (filtroStatus === 'vencidas') return g.status === 'vencida';
+    return true;
+  });
+
+  const rFiltradas = (repeticoes || []).filter(r => {
+    if (filtroObra !== 'todas' && obraDaMaquina[r.maquinaId] !== filtroObra) return false;
+    if (soMesmaPeca && !r.mesmaPeca) return false;
+    return true;
+  });
+  const qtdMesmaPeca = (repeticoes || []).filter(r =>
+    r.mesmaPeca && (filtroObra === 'todas' || obraDaMaquina[r.maquinaId] === filtroObra)).length;
+
+  const cont = { 'em garantia':0, 'vencendo':0, 'sem data':0, 'vencida':0 };
+  (garantias || []).forEach(g => { if (cont[g.status] != null) cont[g.status]++; });
+
+  const Chip = ({ valor, rotulo, n }) => (
+    <button onClick={() => setFiltroStatus(valor)}
+      style={{
+        border: `1.5px solid ${filtroStatus===valor ? COR.azul : COR.borda}`,
+        background: filtroStatus===valor ? COR.azul : '#fff',
+        color: filtroStatus===valor ? '#fff' : COR.texto,
+        borderRadius:999, padding:'6px 13px', fontSize:12.5, fontWeight:700,
+        cursor:'pointer', fontFamily:'inherit', whiteSpace:'nowrap',
+      }}>
+      {rotulo}{n != null ? ` · ${n}` : ''}
+    </button>
+  );
+
+  return (
+    <div style={{display:'flex', flexDirection:'column', gap:14}}>
+      <div style={S.card}>
+        <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:6}}>
+          <ShieldCheck size={18} color={COR.azul}/>
+          <h2 style={{margin:0, fontSize:17, fontWeight:800, color:COR.azul}}>Manutenção e garantia</h2>
+        </div>
+        <p style={{margin:0, fontSize:13, color:COR.cinza, lineHeight:1.5}}>
+          Histórico importado das notas de manutenção. Serve para dois usos: cobrar
+          garantia antes de pagar de novo, e enxergar a peça que está sendo trocada
+          com frequência demais.
+        </p>
+      </div>
+
+      <div style={{display:'flex', gap:8}}>
+        {[['garantias','Garantias', ShieldCheck], ['repeticoes','Repetições', Repeat]].map(([v, rot, Ic]) => (
+          <button key={v} onClick={() => setAba(v)}
+            style={{
+              flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:7,
+              border:`1.5px solid ${aba===v ? COR.azul : COR.borda}`,
+              background: aba===v ? COR.azul : '#fff',
+              color: aba===v ? '#fff' : COR.azul,
+              borderRadius:11, padding:'11px 14px', fontSize:14, fontWeight:800,
+              cursor:'pointer', fontFamily:'inherit',
+            }}>
+            <Ic size={15}/> {rot}
+          </button>
+        ))}
+      </div>
+
+      {obras.length > 1 && (
+        <div style={S.cardFiltro}>
+          <CabecalhoFiltros texto="Obra"/>
+          <select value={filtroObra} onChange={e => setFiltroObra(e.target.value)} style={S.campo}>
+            <option value="todas">Todas as obras</option>
+            {obras.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+      )}
+
+      {aba === 'garantias' ? (
+        garantias === null ? (
+          <p style={{textAlign:'center', color:COR.cinza, padding:'26px 0', fontSize:14}}>Carregando garantias…</p>
+        ) : (
+          <>
+            <div style={{display:'flex', gap:7, flexWrap:'wrap'}}>
+              <Chip valor="ativas"   rotulo="Ainda cobertas" n={cont['em garantia'] + cont['vencendo']}/>
+              <Chip valor="vencendo" rotulo="Vencendo"       n={cont['vencendo']}/>
+              <Chip valor="sem_data" rotulo="Sem data"       n={cont['sem data']}/>
+              <Chip valor="vencidas" rotulo="Vencidas"       n={cont['vencida']}/>
+              <Chip valor="todas"    rotulo="Todas"          n={garantias.length}/>
+            </div>
+
+            {gFiltradas.length === 0 ? (
+              <div style={{...S.card, textAlign:'center', color:COR.cinza, fontSize:13.5}}>
+                Nenhum item nesse filtro.
+              </div>
+            ) : (
+              <div style={{display:'flex', flexDirection:'column', gap:8}}>
+                {gFiltradas.map(g => {
+                  const c = corStatusGarantia(g.status);
+                  const dias = g.garantiaAte
+                    ? Math.round((new Date(g.garantiaAte + 'T12:00:00') - new Date()) / 86400000)
+                    : null;
+                  return (
+                    <div key={g.id} style={{...S.card, padding:'12px 14px', borderLeft:`4px solid ${c.fg}`}}>
+                      <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10, flexWrap:'wrap'}}>
+                        <div style={{flex:1, minWidth:180}}>
+                          <div style={{fontSize:14, fontWeight:800, color:COR.texto, lineHeight:1.35}}>
+                            {g.descricao || '—'}{g.posicao ? ` · ${g.posicao}` : ''}
+                          </div>
+                          <div style={{fontSize:12.5, color:COR.cinza, marginTop:3}}>
+                            {g.veiculo}
+                            {obraDaMaquina[g.maquinaId] ? ` · ${obraDaMaquina[g.maquinaId]}` : ''}
+                          </div>
+                        </div>
+                        <Badge cor={c.fg} bg={c.bg}>{c.txt}</Badge>
+                      </div>
+
+                      <div style={{display:'flex', gap:14, flexWrap:'wrap', marginTop:9, fontSize:12.5, color:COR.cinza}}>
+                        <span>comprado em <b style={{color:COR.texto}}>{dataBRLonga(g.data)}</b></span>
+                        {g.garantiaDias != null && (
+                          <span>garantia de <b style={{color:COR.texto}}>{g.garantiaDias} dias</b></span>
+                        )}
+                        {g.garantiaAte && (
+                          <span>vence <b style={{color:c.fg}}>{dataBRLonga(g.garantiaAte)}</b>
+                            {dias != null && dias >= 0 ? ` (faltam ${dias}d)` : ''}
+                          </span>
+                        )}
+                        {g.garantiaKm != null && (
+                          <span>ou <b style={{color:COR.texto}}>{Number(g.garantiaKm).toLocaleString('pt-BR')} {g.unidade === 'km' ? 'km' : 'h'}</b></span>
+                        )}
+                      </div>
+
+                      {g.garantiaKmAte != null && g.kmAtual != null && (
+                        <div style={{fontSize:12, color:COR.cinza, marginTop:5}}>
+                          Medidor hoje <b style={{color:COR.texto}}>{Math.round(Number(g.kmAtual)).toLocaleString('pt-BR')}</b>
+                          {' · '}limite da garantia <b style={{color:COR.texto}}>{Math.round(Number(g.garantiaKmAte)).toLocaleString('pt-BR')}</b>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <p style={{fontSize:11.5, color:COR.cinza, margin:'2px 4px 0', lineHeight:1.5}}>
+              "Sem data" é o item cuja nota não trazia a data do serviço — o prazo
+              existe, mas não há de quando contar. "Vencendo" é o que acaba nos
+              próximos 30 dias.
+            </p>
+          </>
+        )
+      ) : (
+        repeticoes === null ? (
+          <p style={{textAlign:'center', color:COR.cinza, padding:'26px 0', fontSize:14}}>Carregando repetições…</p>
+        ) : rFiltradas.length === 0 ? (
+          <div style={{...S.card, textAlign:'center', color:COR.cinza, fontSize:13.5}}>
+            Nenhuma repetição dentro do prazo de garantia nesse filtro.
+          </div>
+        ) : (
+          <>
+            <div style={{...S.card, padding:'12px 14px', background:COR.amareloBg, border:'1px solid #FDE68A'}}>
+              <div style={{fontSize:13.5, color:'#92400E', lineHeight:1.5}}>
+                O veículo voltou à oficina pelo mesmo sistema enquanto o serviço
+                anterior ainda estava no prazo de garantia. As <b>{qtdMesmaPeca}</b> marcadas
+                como <b>mesma peça</b> são as de conferir primeiro: ali a descrição
+                repete a peça, não só a categoria.
+              </div>
+            </div>
+
+            <div style={{display:'flex', gap:7, flexWrap:'wrap'}}>
+              {[[true,'Só mesma peça', qtdMesmaPeca], [false,'Tudo', (repeticoes||[]).filter(r => filtroObra==='todas' || obraDaMaquina[r.maquinaId]===filtroObra).length]].map(([v, rot, n]) => (
+                <button key={String(v)} onClick={() => setSoMesmaPeca(v)}
+                  style={{
+                    border:`1.5px solid ${soMesmaPeca===v ? COR.azul : COR.borda}`,
+                    background: soMesmaPeca===v ? COR.azul : '#fff',
+                    color: soMesmaPeca===v ? '#fff' : COR.texto,
+                    borderRadius:999, padding:'6px 13px', fontSize:12.5, fontWeight:700,
+                    cursor:'pointer', fontFamily:'inherit', whiteSpace:'nowrap',
+                  }}>{rot} · {n}</button>
+              ))}
+            </div>
+
+            <div style={{display:'flex', flexDirection:'column', gap:8}}>
+              {rFiltradas.map((r, i) => (
+                <div key={i} style={{...S.card, padding:'12px 14px', borderLeft:`4px solid ${r.mesmaPeca ? COR.vermelho : COR.amarelo}`}}>
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10, flexWrap:'wrap'}}>
+                    <div style={{flex:1, minWidth:180}}>
+                      <div style={{fontSize:14, fontWeight:800, color:COR.texto}}>{r.veiculo}</div>
+                      <div style={{fontSize:12.5, color:COR.cinza, marginTop:2}}>
+                        {r.categoria || 'sem categoria'}
+                        {obraDaMaquina[r.maquinaId] ? ` · ${obraDaMaquina[r.maquinaId]}` : ''}
+                      </div>
+                    </div>
+                    <div style={{display:'flex', gap:6, flexWrap:'wrap', justifyContent:'flex-end'}}>
+                      {r.mesmaPeca && (
+                        <Badge cor={COR.vermelho} bg={COR.vermelhoBg}>
+                          mesma peça{r.palavraChave ? `: ${r.palavraChave}` : ''}
+                        </Badge>
+                      )}
+                      <Badge cor={COR.amarelo} bg={COR.amareloBg}>
+                        <Repeat size={12}/> {r.diasEntre} dias depois
+                      </Badge>
+                    </div>
+                  </div>
+                  {r.primeiroFornecedor && r.segundoFornecedor && r.primeiroFornecedor !== r.segundoFornecedor && (
+                    <div style={{fontSize:12, color:COR.vermelho, fontWeight:700, marginTop:7}}>
+                      Oficinas diferentes nas duas vezes.
+                    </div>
+                  )}
+
+                  <div style={{marginTop:10, display:'flex', flexDirection:'column', gap:7}}>
+                    <div style={{display:'flex', gap:9, alignItems:'flex-start'}}>
+                      <span style={{fontSize:11, fontWeight:800, color:COR.cinza, minWidth:52, paddingTop:2}}>1ª</span>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13, color:COR.texto, lineHeight:1.4}}>{r.primeiraDescricao || '—'}</div>
+                        <div style={{fontSize:11.5, color:COR.cinza, marginTop:2}}>
+                          {dataBRLonga(r.primeira)}
+                          {r.primeiroFornecedor ? ` · ${r.primeiroFornecedor}` : ''}
+                          {r.garantiaDias != null ? ` · garantia de ${r.garantiaDias}d` : ''}
+                          {r.cobertaAte ? ` até ${dataBRLonga(r.cobertaAte)}` : ''}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{display:'flex', gap:9, alignItems:'flex-start'}}>
+                      <span style={{fontSize:11, fontWeight:800, color:COR.amarelo, minWidth:52, paddingTop:2}}>2ª</span>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13, color:COR.texto, lineHeight:1.4}}>{r.segundaDescricao || '—'}</div>
+                        <div style={{fontSize:11.5, color:COR.cinza, marginTop:2}}>
+                          {dataBRLonga(r.segunda)}
+                          {r.segundoFornecedor ? ` · ${r.segundoFornecedor}` : ''}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <p style={{fontSize:11.5, color:COR.cinza, margin:'2px 4px 0', lineHeight:1.5}}>
+              A conta olha só os sistemas que podem voltar a falhar — suspensão,
+              freios, elétrica, arrefecimento, alinhamento, motor e embreagem.
+              Revisão, lataria e pneu ficam fora: ali trocar várias coisas no mesmo
+              dia é o normal. Também ficam fora os pares com menos de 15 dias de
+              diferença, que quase sempre são a mesma oficina emitindo duas notas.
+              "Mesma peça" sai da palavra que as duas descrições dividem — é uma
+              pista, não uma conclusão: confira a nota antes de cobrar.
+            </p>
+          </>
+        )
+      )}
+    </div>
+  );
+}
+
 // Tela dedicada de revisões pendentes (aba própria no admin)
 function TelaRevisoesPendentes({ maquinas, revisoes, onVoltar, onRegistrarRevisao }) {
   const lista = maquinasParaRevisao(maquinas);
@@ -6166,6 +6711,9 @@ function App() {
                 <button onClick={() => setTela('problemas')} style={estilo(estA('problemas'))}>
                   <AlertTriangle size={16}/> Problemas
                 </button>
+                <button onClick={() => setTela('manutencao')} style={estilo(estA('manutencao'))}>
+                  <ShieldCheck size={16}/> Manutenção
+                </button>
                 <button onClick={() => setShowChecklist(true)} style={estilo(false)}>
                   <List size={16}/> Checklist padrão
                 </button>
@@ -6255,6 +6803,9 @@ function App() {
         )}
         {tela === 'revisoes' && (
           <TelaRevisoesPendentes maquinas={maquinas} revisoes={revisoes} onVoltar={() => setTela('lista')} onRegistrarRevisao={registrarRevisao} />
+        )}
+        {tela === 'manutencao' && (
+          <TelaManutencao maquinas={maquinas} />
         )}
       </main>
 
