@@ -5,22 +5,27 @@
 
 // IMPORTANTE: ao publicar uma nova versão do app, troque o número da versão
 // abaixo (ex: v2, v3...). Isso força os celulares a baixarem a versão nova.
-const VERSION = 'frota-axial-v76';
+const VERSION = 'frota-axial-v77';
 const CACHE = VERSION;
 
-// Arquivos essenciais do app (o "casco")
+// O que o install baixa: só o que é pequeno e o app não abre sem.
+//
+// As bibliotecas de CDN (React, ReactDOM, Babel, supabase-js, jsPDF) saíram
+// desta lista de propósito. Juntas passam de 3 MB — o Babel sozinho leva mais
+// de 2 — e baixar tudo isso no install disputava a rede com as primeiras
+// consultas ao Supabase. Num celular de obra isso estourava o tempo limite
+// do app e a tela ficava em "Carregando máquinas…" na primeira abertura
+// depois de cada publicação.
+//
+// Elas continuam indo para o cache, só que pelo handler de fetch lá embaixo,
+// quando a página realmente as pede. O efeito prático é o mesmo: quem abriu
+// o app uma vez tem tudo guardado para abrir offline depois.
 const APP_SHELL = [
   './',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
   './icon-maskable-512.png',
-  // bibliotecas de CDN usadas pelo app (para abrir offline)
-  'https://unpkg.com/react@18.3.1/umd/react.production.min.js',
-  'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js',
-  'https://unpkg.com/@babel/standalone@7/babel.min.js',
-  'https://unpkg.com/@supabase/supabase-js@2',
-  'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
 ];
 
 // Instalação: baixa e guarda o casco
@@ -54,16 +59,30 @@ self.addEventListener('fetch', (event) => {
     return; // deixa o navegador tratar normalmente (vai à rede)
   }
 
-  // Navegação (abrir o app): network-first, cai pro cache se offline.
+  // Navegação (abrir o app): mostra o que está guardado e atualiza por trás.
+  //
+  // Era network-first: o app esperava baixar 400 KB de index.html antes de
+  // desenhar qualquer coisa, a cada abertura. Em obra, com sinal fraco, isso
+  // é tela branca por vários segundos mesmo com a versão certa já no celular.
+  //
+  // Agora quem já abriu o app uma vez vê a tela na hora. A versão nova é
+  // baixada em segundo plano e entra na próxima abertura — ou antes, porque
+  // o index.html registra o SW e pede ativação assim que detecta atualização.
   if (req.mode === 'navigate') {
     event.respondWith(
-      fetch(req)
-        .then((resp) => {
-          const copia = resp.clone();
-          caches.open(CACHE).then((c) => c.put('./index.html', copia));
-          return resp;
-        })
-        .catch(() => caches.match('./index.html').then((r) => r || caches.match('./')))
+      caches.match('./index.html').then((cacheada) => {
+        const rede = fetch(req)
+          .then((resp) => {
+            if (resp && resp.status === 200) {
+              const copia = resp.clone();
+              caches.open(CACHE).then((c) => c.put('./index.html', copia));
+            }
+            return resp;
+          })
+          .catch(() => cacheada || caches.match('./'));
+        // Sem cache (primeira visita): espera a rede, que é o único caminho.
+        return cacheada || rede;
+      })
     );
     return;
   }

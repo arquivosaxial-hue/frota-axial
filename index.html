@@ -249,6 +249,7 @@ const Gauge          = (p) => <LucideIcon name="gauge" {...p} />;
 const ShieldCheck    = (p) => <LucideIcon name="shield-check" {...p} />;
 const Repeat         = (p) => <LucideIcon name="repeat" {...p} />;
 const Receipt        = (p) => <LucideIcon name="receipt" {...p} />;
+const RefreshCw      = (p) => <LucideIcon name="refresh-cw" {...p} />;
 const Building       = (p) => <LucideIcon name="building" {...p} />;
 const Factory        = (p) => <LucideIcon name="factory" {...p} />;
 const Power          = (p) => <LucideIcon name="power" {...p} />;
@@ -883,7 +884,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v76';
+const APP_VERSION = 'v77';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -2331,6 +2332,34 @@ const S = {
   cardFiltro: { background:'#FFFFFF', border:`1.5px solid #BFD4EC`, borderRadius:14, padding:16, boxShadow:'0 1px 3px rgba(16,24,40,.06)' },
 };
 
+// Tela de espera que não deixa o usuário preso. Depois de 12 segundos
+// assume que a conexão está ruim e oferece tentar de novo — antes disso
+// seria barulho, porque numa rede lenta 5 segundos é normal.
+function Carregando({ texto, onTentarDeNovo }) {
+  const [demorou, setDemorou] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setDemorou(true), 12000);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <div style={{textAlign:'center', padding:'40px 20px', color:COR.cinza}}>
+      <p style={{margin:0}}>{texto || 'Carregando…'}</p>
+      {demorou && (
+        <div style={{marginTop:18}}>
+          <p style={{margin:'0 0 12px', fontSize:13.5, lineHeight:1.5}}>
+            A conexão está demorando mais que o normal.
+          </p>
+          {onTentarDeNovo && (
+            <button onClick={onTentarDeNovo} style={{...S.botaoSec, padding:'10px 20px'}}>
+              <RefreshCw size={15}/> Tentar de novo
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Cabeçalho padrão dos blocos de filtros
 function CabecalhoFiltros({ texto }) {
   return (
@@ -2908,7 +2937,7 @@ function GestaoObras({ obras, onCriar, onRenomear, onExcluir, onFechar }) {
 // ============================================================
 // TELA: GESTÃO DE MÁQUINAS (lista + busca + filtros)
 // ============================================================
-function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAtiva, onAbrirObras, onRegistrarRevisao, carregando }) {
+function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAtiva, onAbrirObras, onRegistrarRevisao, carregando, onRecarregar }) {
   const [busca, setBusca] = useState('');
   const [fTipo, setFTipo] = useState('todos');
   const [fObra, setFObra] = useState('todas');
@@ -3023,7 +3052,7 @@ function TelaMaquinas({ maquinas, obras, revisoes, onNova, onEditar, onToggleAti
       </div>
 
       {carregando ? (
-        <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando máquinas…</p>
+        <Carregando texto="Carregando máquinas…" onTentarDeNovo={onRecarregar}/>
       ) : filtradas.length === 0 ? (
         <div style={{textAlign:'center', padding:'48px 20px', color:COR.cinza}}>
           <Factory size={40} color={COR.borda} />
@@ -6205,7 +6234,18 @@ function App() {
     (async () => {
       setCarregando(true);
       if (navigator.onLine && supabaseClient) {
-        try { await semearSeVazio(); await semearChecklistSeVazio(); } catch (e) { console.warn('semear', e); }
+        // Com tempo limite de propósito. A semente só importa num banco novo;
+        // numa obra com sinal ruim ela não pode segurar a tela. Sem isto, uma
+        // consulta pendurada deixava "Carregando máquinas…" para sempre,
+        // porque o carregando só vira falso depois daqui.
+        // Em paralelo: uma não depende da outra, e em sequência o pior caso
+        // somava os dois tempos limite antes de a tela liberar.
+        try {
+          await Promise.all([
+            comTimeout(semearSeVazio(), 6000),
+            comTimeout(semearChecklistSeVazio(), 6000),
+          ]);
+        } catch (e) { console.warn('semear', e); }
       }
       await recarregar();
       if (supabaseClient && navigator.onLine) {
@@ -6618,7 +6658,7 @@ function App() {
         </header>
         <main style={{padding:'24px 16px 60px'}}>
           {carregando ? (
-            <p style={{textAlign:'center', color:COR.cinza, padding:'40px 0'}}>Carregando máquinas…</p>
+            <Carregando texto="Carregando máquinas…" onTentarDeNovo={recarregar}/>
           ) : opPasso === 'obra' ? (
             <OperadorSelecionaObra
               obras={obras} maquinas={maquinas} registros={registros}
@@ -6744,6 +6784,7 @@ function App() {
             onToggleAtiva={toggleAtiva}
             onAbrirObras={() => setShowObras(true)}
             onRegistrarRevisao={registrarRevisao}
+            onRecarregar={recarregar}
           />
         )}
         {tela === 'form' && (
