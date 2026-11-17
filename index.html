@@ -710,6 +710,46 @@ function empresaDaMaquina(m) {
 // PLAUSÍVEL — o valor corrigido precisa ficar igual ou acima da última leitura
 // e dentro do que a máquina consegue avançar em poucos dias. Se não fecha,
 // devolve null e o operador confere na mão.
+// Escala de referência da máquina: valores que o ADMIN cadastrou, não o que o
+// operador digitou ontem. É isso que sobrevive a um erro de escala — a leitura
+// anterior, não: uma vez que um valor inflado entra, o dia seguinte fica
+// coerente com ele e o alerta nunca mais dispara.
+// Ordem de preferência proposital. O "medidor inicial" é digitado pelo admin no
+// cadastro e a operação diária nunca o altera — é o único valor imune.
+// O marco de revisão NÃO serve de âncora: o formulário de revisão vem
+// pré-preenchido com a leitura atual, então quando a leitura está inflada o
+// marco herda o erro (foi o que aconteceu com o RT-02 e o AB-01).
+function escalaDaMaquina(m) {
+  if (!m) return null;
+  const ordem = [m.horimetroInicial, m.horimetroUltimaManutencao, m.horimetroAtual];
+  for (const v of ordem) {
+    const n = Number(v);
+    if (isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+// Detecta o erro mais comum desta frota: TODO medidor daqui tem um dígito de
+// décimos (o JCB mostra 1150.4, o Quartzo tem o tambor vermelho, o CAT vem
+// marcado "1/10"), e o operador digita todos os números sem a vírgula —
+// 11504 em vez de 1150,4. O valor entra 10x maior e nunca mais é notado.
+//
+// Só acusa quando dividir por 10 (ou 100) devolve o número para a faixa da
+// máquina. Assim uma máquina que de fato rodou muito não é barrada à toa.
+function detectarErroDeEscala(novo, m) {
+  const escala = escalaDaMaquina(m);
+  if (!(novo > 0) || !(escala > 0)) return null;
+  if (novo < escala * 5) return null;                 // dentro do esperado
+  for (const divisor of [10, 100]) {
+    const c = Math.round((novo / divisor) * 10) / 10;
+    // o valor corrigido tem que continuar ACIMA do cadastro: medidor não anda
+    // para trás. É isso que separa o erro de escala de uma máquina que
+    // simplesmente rodou muito desde que foi cadastrada.
+    if (c >= escala) return { corrigido: c, divisor, escala };
+  }
+  return null;
+}
+
 function sugerirCorrecaoLeitura(novo, ultima, unidade) {
   if (!(novo > 0) || !(ultima > 0)) return null;
   const maxAvanco = (unidade === 'km') ? 4500 : 72;   // ~3 dias de folga
@@ -756,7 +796,7 @@ function checklistDaMaquina(maquina, padrao) {
 // Quantos dias para trás o operador pode recuperar um checklist atrasado
 const DIAS_RETROATIVO = 30;
 // Versão do app (exibida na tela inicial). Bumpar junto com o sw.js.
-const APP_VERSION = 'v74';
+const APP_VERSION = 'v75';
 // Nunca recupera dias anteriores a esta data
 const DATA_INICIO_RETROATIVO = '2026-06-01';
 
@@ -2494,6 +2534,16 @@ function RegistrarRevisao({ maquina, onSalvar, onFechar }) {
     setErro('');
     if (!data) { setErro('Informe a data da revisão.'); return; }
     if (horimetro === '' || isNaN(Number(horimetro))) { setErro(`Informe o ${maquina.unidade==='km'?'hodômetro':'horímetro'} da revisão.`); return; }
+    // Este campo vem pré-preenchido com a leitura atual. Se ela estiver inflada,
+    // o marco de revisão herda o erro e passa a contaminar todo o cálculo de
+    // manutenção — e some do radar, porque o marco é justamente a referência.
+    const esc = detectarErroDeEscala(Number(horimetro), maquina);
+    if (esc) {
+      setErro(`${horimetro}${suf} é ${esc.divisor}x maior que o cadastro desta máquina `
+            + `(${Math.round(esc.escala)}${suf}). O medidor tem um dígito de décimos: `
+            + `confira se não é ${String(esc.corrigido).replace('.', ',')}${suf}.`);
+      return;
+    }
     setSalvando(true);
     try {
       await onSalvar({ dataRef: data, horimetro: Number(horimetro), observacao: obs.trim() });
@@ -3275,6 +3325,20 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
           const novo = Number(horimetro);
           const ultima = (maquina.horimetroAtual != null) ? Number(maquina.horimetroAtual) : null;
           const suf = unidadeSufixo(maquina);
+          // 1º) erro de escala — comparado com o CADASTRO da máquina.
+          // Vem antes das outras checagens de propósito: a comparação com a
+          // leitura anterior não enxerga esse erro depois que ele entra uma vez.
+          const esc = detectarErroDeEscala(novo, maquina);
+          if (esc) {
+            setSugestaoLeitura(esc.corrigido);
+            setAvisoLeitura(
+              `${novo}${suf} é ${esc.divisor}x maior que o normal desta máquina `
+              + `(o cadastro dela está em ${Math.round(esc.escala)}${suf}).\n\n`
+              + `O medidor desta frota tem um dígito de DÉCIMOS no fim — o número `
+                + `menor, ou o tambor vermelho. Ele entra depois da vírgula, `
+                + `não emendado nos outros.`);
+            return;
+          }
           if (ultima != null && ultima > 0) {
             if (novo < ultima) {
               setSugestaoLeitura(sugerirCorrecaoLeitura(novo, ultima, maquina.unidade));
@@ -3305,6 +3369,17 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
         const novo = Number(horimetro);
         const ultima = (maquina.horimetroAtual != null) ? Number(maquina.horimetroAtual) : null;
         const suf = unidadeSufixo(maquina);
+        const esc = detectarErroDeEscala(novo, maquina);
+        if (esc) {
+          setSugestaoLeitura(esc.corrigido);
+          setAvisoLeitura(
+            `${novo}${suf} é ${esc.divisor}x maior que o normal desta máquina `
+            + `(o cadastro dela está em ${Math.round(esc.escala)}${suf}).\n\n`
+            + `O medidor desta frota tem um dígito de DÉCIMOS no fim — o número `
+              + `menor, ou o tambor vermelho. Ele entra depois da vírgula, `
+              + `não emendado nos outros.`);
+          return;
+        }
         if (ultima != null && ultima > 0) {
           if (novo < ultima) { setSugestaoLeitura(sugerirCorrecaoLeitura(novo, ultima, maquina.unidade)); setAvisoLeitura(`A leitura informada (${novo}${suf}) é MENOR que a última registrada (${Math.round(ultima)}${suf}). O medidor não costuma diminuir. Confira se digitou certo.`); return; }
           if (novo - ultima > 1000) { setSugestaoLeitura(sugerirCorrecaoLeitura(novo, ultima, maquina.unidade)); setAvisoLeitura(`A diferença para a última leitura é de ${Math.round(novo - ultima)}${suf} (acima de 1000${suf}). Isso é incomum. Confira se digitou certo.`); return; }
@@ -3422,10 +3497,16 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
                 <label style={S.rotulo}>{unidadeMedidor(maquina)} atual</label>
                 <div style={{position:'relative'}}>
                   <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
-                  <input type="number" inputMode="numeric" value={horimetro} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); setSugestaoLeitura(null); }}/>
+                  <input type="number" inputMode="decimal" step="0.1" value={horimetro} placeholder="0,0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); setSugestaoLeitura(null); }}/>
                   <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{unidadeSufixo(maquina)}</span>
                 </div>
                 <p style={{fontSize:12, color:COR.cinza, margin:'7px 2px 0'}}>Obrigatório: confirme a leitura atual do medidor, mesmo sem ter rodado.</p>
+                {maquina.horimetroAtual > 0 && (
+                  <p style={{fontSize:12.5, color:COR.azul, margin:'7px 2px 0', fontWeight:600}}>
+                    Última leitura: {String(Math.round(maquina.horimetroAtual * 10) / 10).replace('.', ',')}{unidadeSufixo(maquina)}
+                    <span style={{color:COR.cinza, fontWeight:400}}> — se o painel tiver um dígito menor no fim, ele é o décimo: digite com vírgula.</span>
+                  </p>
+                )}
               </div>
             )}
           </>
@@ -3439,10 +3520,16 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
                 <label style={S.rotulo}>{unidadeMedidor(maquina)} atual</label>
                 <div style={{position:'relative'}}>
                   <Gauge size={18} color={COR.cinza} style={{position:'absolute', left:13, top:'50%', transform:'translateY(-50%)'}}/>
-                  <input type="number" inputMode="numeric" value={horimetro} placeholder="0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); setSugestaoLeitura(null); }}/>
+                  <input type="number" inputMode="decimal" step="0.1" value={horimetro} placeholder="0,0" style={{...S.campo, paddingLeft:42}} onChange={e => { setHorimetro(e.target.value); setAvisoLeitura(''); setSugestaoLeitura(null); }}/>
                   <span style={{position:'absolute', right:13, top:'50%', transform:'translateY(-50%)', color:COR.cinza, fontSize:13, fontWeight:600}}>{unidadeSufixo(maquina)}</span>
                 </div>
                 <p style={{fontSize:12, color:COR.cinza, margin:'7px 2px 0'}}>Obrigatório. Se o medidor estiver com defeito, repita a última leitura — assim saberemos que precisa de conserto.</p>
+                {maquina.horimetroAtual > 0 && (
+                  <p style={{fontSize:12.5, color:COR.azul, margin:'7px 2px 0', fontWeight:600}}>
+                    Última leitura: {String(Math.round(maquina.horimetroAtual * 10) / 10).replace('.', ',')}{unidadeSufixo(maquina)}
+                    <span style={{color:COR.cinza, fontWeight:400}}> — se o painel tiver um dígito menor no fim, ele é o décimo: digite com vírgula.</span>
+                  </p>
+                )}
               </div>
             ) : (
               <div style={{background:'#F3F4F6', borderRadius:10, padding:'10px 13px', fontSize:13.5, color:COR.cinza}}>
@@ -3556,17 +3643,17 @@ function OperadorRegistra({ maquina, paradaAberta, checklistItens, onConfirmar, 
           <div style={{background:COR.amareloBg, border:'1.5px solid #FDE68A', borderRadius:12, padding:'14px 16px'}}>
             <div style={{display:'flex', gap:10, marginBottom:12}}>
               <AlertTriangle size={20} color={COR.amarelo} style={{flexShrink:0, marginTop:1}}/>
-              <div style={{fontSize:14, color:'#92400E', fontWeight:600, lineHeight:1.45}}>{avisoLeitura}</div>
+              <div style={{fontSize:14, color:'#92400E', fontWeight:600, lineHeight:1.45, whiteSpace:'pre-line'}}>{avisoLeitura}</div>
             </div>
             {sugestaoLeitura != null && (
               <div style={{marginBottom:12, padding:'11px 13px', background:'#FFF', border:`1.5px solid ${COR.verde}`, borderRadius:10}}>
                 <div style={{fontSize:13.5, color:COR.texto, marginBottom:9, lineHeight:1.45}}>
-                  Parece vírgula no lugar errado. Você quis dizer <b>{sugestaoLeitura}{unidadeSufixo(maquina)}</b>?
+                  Parece vírgula no lugar errado. Você quis dizer <b>{Number(sugestaoLeitura).toFixed(1).replace('.', ',')}{unidadeSufixo(maquina)}</b>?
                 </div>
                 <button
                   onClick={() => { setHorimetro(String(sugestaoLeitura)); setSugestaoLeitura(null); setAvisoLeitura(''); }}
                   style={{...S.botaoPrim, width:'100%', background:COR.verde}}>
-                  <CheckCircle2 size={17}/> Sim, usar {sugestaoLeitura}{unidadeSufixo(maquina)}
+                  <CheckCircle2 size={17}/> Sim, usar {Number(sugestaoLeitura).toFixed(1).replace('.', ',')}{unidadeSufixo(maquina)}
                 </button>
               </div>
             )}
